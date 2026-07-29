@@ -105,6 +105,12 @@ def grammar_bump() -> Workflow:
            goal='recompute content_hash over the file including its trailing newline')
     w.step('gate', goal='check-grammar-version agrees the hash describes the content')
     w.step('sync', goal='propagate the canonical file to every copy')
+    # Added 2026-07-29 by the stale-verify rule, which this method's own failure produced.
+    # sync is a CHANGE after the verify: without this step the propagated copies get
+    # committed with nothing having checked them, which is exactly how two of them were
+    # recorded sitting at 1.7.0 while canonical was 1.9.0.
+    w.step('verify-copies',
+           goal='every copy is byte-identical to the canonical file after syncing')
     w.step('commit-copies',
            goal='commit the synced copies so a rewrite cannot silently revert them')
     return w

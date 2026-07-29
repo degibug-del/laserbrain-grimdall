@@ -265,6 +265,12 @@ def grammar_bindings(ctx):
         return ok('propagate the canonical file to every copy') if rc == 0 \
             else bad('propagate the canonical file to every copy', out[-160:])
 
+    def verify_copies(c):
+        rc, out = sh('node scripts/sync-grammar.mjs --check', cwd=SITE)
+        return ok('every copy is byte-identical to the canonical file after syncing') \
+            if rc == 0 else bad('every copy is byte-identical to the canonical file',
+                                out[-160:])
+
     def commit_copies(c):
         """The step that exists because a rewrite discarded uncommitted synced copies."""
         sh('git add -A', cwd=SITE)
@@ -275,7 +281,7 @@ def grammar_bindings(ctx):
 
     return {'edit-canonical': edit_canonical, 'bump-version': bump_version,
             'generate-hash': generate_hash, 'gate': gate, 'sync': sync,
-            'commit-copies': commit_copies}
+            'verify-copies': verify_copies, 'commit-copies': commit_copies}
 
 
 BINDINGS = {'release': release_bindings, 'deploy': deploy_bindings,
