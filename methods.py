@@ -49,14 +49,14 @@ def release() -> Workflow:
     had listed by hand.
     """
     w = Workflow(goal='publish a verified laserbrain release to PyPI')
-    w.step('tests', goal='every test file exits zero')
+    w.step('test', goal='every test file exits zero')
     w.step('bump', goal='the version rises in pyproject and __init__')
-    w.step('changelog', goal='the changelog records what changed and why')
-    w.step('rebuild', goal='rebuild the wheel from the current tree')
+    w.step('edit-changelog', goal='the changelog records what changed and why')
+    w.step('build-wheel', goal='rebuild the wheel from the current tree')
     w.step('verify-artifact',
            goal='the built wheel exports match the tree and the headline path runs')
     w.step('commit', goal='the source of this release is committed and pushed')
-    w.step('pypi-upload', goal='upload the release to PyPI',
+    w.step('upload-pypi', goal='upload the release to PyPI',
            irreversible=True, outward=True)
     w.step('verify-published',
            goal='install from PyPI in a clean venv outside the tree and import')
@@ -66,15 +66,19 @@ def release() -> Workflow:
 def deploy() -> Workflow:
     """Ship phronesis.world.
 
-    `gates` is its own step rather than part of the build because that is precisely the
-    distinction that was lost: a red build did not stop the commit that followed it.
+    `gate-check` is its own step rather than part of the build because that is precisely
+    the distinction that was lost: a red build did not stop the commit that followed it.
+
+    `deploy` is irreversible. It was written reversible=False here first, and the dictionary
+    linter caught it on its first run against a real method — putting a build in front of
+    users cannot be un-shown, and a later deploy replaces it rather than undoing it.
     """
     w = Workflow(goal='ship phronesis.world with every gate green')
     w.step('build', goal='the site builds and every prebuild gate passes')
-    w.step('gates', goal='no gate reports a problem')
+    w.step('gate-check', goal='no gate reports a problem')
     w.step('commit', goal='the source of this deploy is committed and pushed')
     w.step('deploy', goal='publish the built site to Cloudflare Pages',
-           irreversible=False, outward=True)
+           irreversible=True, outward=True)
     w.step('verify-live',
            goal='fetch the changed page from the deployment URL, not the cached domain')
     return w
@@ -90,7 +94,7 @@ def grammar_bump() -> Workflow:
     w = Workflow(goal='change the canonical grammar and keep every copy honest')
     w.step('edit-canonical', goal='edit lasermind grammar.json, the one source')
     w.step('bump-version', goal='raise laserbrain_grammar so the change has a name')
-    w.step('rehash',
+    w.step('generate-hash',
            goal='recompute content_hash over the file including its trailing newline')
     w.step('gate', goal='check-grammar-version agrees the hash describes the content')
     w.step('sync', goal='propagate the canonical file to every copy')
