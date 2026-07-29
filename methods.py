@@ -60,6 +60,13 @@ def release() -> Workflow:
            irreversible=True, outward=True)
     w.step('verify-published',
            goal='install from PyPI in a clean venv outside the tree and import')
+    # Added 2026-07-29 after this method was USED. Bumping the SDK invalidates the drift
+    # vectors in phronesis-world, which are generated from it — so the site's laserstore
+    # gate fails on the next build, in a different repo, with nothing linking the two.
+    # A release is not finished when PyPI has the wheel; it is finished when everything
+    # generated FROM the wheel agrees with it again.
+    w.step('generate-vectors',
+           goal='regenerate the drift vectors so the site gate compares against this version')
     return w
 
 
