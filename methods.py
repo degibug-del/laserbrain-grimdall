@@ -116,7 +116,59 @@ def grammar_bump() -> Workflow:
     return w
 
 
-METHODS = {'release': release, 'deploy': deploy, 'grammar-bump': grammar_bump}
+def research_note() -> Workflow:
+    """Publish a research note to phronesis.world.
+
+    Performed by hand 2026-07-29 for the harness detection study and got wrong: written
+    only to public/research/, and check-research-served caught it as an orphan. The
+    convention is a WORKING copy in research/ and a SERVED copy in public/research/.
+
+    `measure` is first because a note whose numbers cannot be reproduced is not a note.
+    """
+    w = Workflow(goal='publish a research note with reproducible numbers')
+    w.step('measure', goal='the analysis runs and produces the numbers the note will quote')
+    w.step('edit-note',
+           goal='write the note in both research/ and public/research/, byte-identical')
+    w.step('build', goal='the site builds and check-research-served finds no orphan')
+    w.step('verify-served',
+           goal='the note is in the build output and the working copy matches the served one')
+    w.step('commit', goal='the note and the script that reproduces it are recorded')
+    w.step('deploy', goal='publish the built site', irreversible=True, outward=True)
+    w.step('verify-live',
+           goal='fetch the note from the deployment URL and find the result in it')
+    return w
+
+
+def repo_surgery() -> Workflow:
+    """Rewrite git history to remove something that should never have been committed.
+
+    Performed 2026-07-29 to strip a 14GB dataset that made phronesis-world unpushable for
+    51 commits. One thing went wrong: git filter-repo HARD-RESETS the working tree, so
+    uncommitted changes are discarded — the grammar sync was uncommitted and two copies
+    silently reverted.
+
+    Hence `commit` BEFORE `generate-backup`, not after. `verify-fastforward` decides whether
+    this is safe at all: if the data is already on the remote, the rewrite means force-
+    pushing over published history, which is a different and much worse operation.
+    """
+    w = Workflow(goal='remove something from git history without losing anything else')
+    w.step('inspect-history', goal='find what is oversized and when it entered')
+    w.step('verify-fastforward',
+           goal='the offending commits are unpushed, so nothing published is rewritten')
+    w.step('commit', goal='record every uncommitted change, because the rewrite eats them')
+    w.step('generate-backup', goal='clone .git so the rewrite is recoverable')
+    w.step('rewrite-history', goal='strip the paths from every commit that carries them',
+           irreversible=True)
+    w.step('verify-history',
+           goal='no oversized blobs remain, commits survived, the old tip kept its sha')
+    w.step('push', goal='send the rewritten history to the remote',
+           irreversible=True, outward=True)
+    w.step('verify-remote', goal='the remote matches local and the work is there')
+    return w
+
+
+METHODS = {'release': release, 'deploy': deploy, 'grammar-bump': grammar_bump,
+           'research-note': research_note, 'repo-surgery': repo_surgery}
 
 
 def main():
