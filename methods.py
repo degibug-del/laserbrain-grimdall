@@ -153,6 +153,11 @@ def repo_surgery() -> Workflow:
     """
     w = Workflow(goal='remove something from git history without losing anything else')
     w.step('inspect-history', goal='find what is oversized and when it entered')
+    # Added 2026-07-29 after a token leaked through a rewrite-and-push done by hand. A
+    # history rewrite is the moment to scan, because it is the last point at which the
+    # history can still be changed cheaply.
+    w.step('inspect-secrets',
+           goal='lb_secrets finds nothing in any commit before the history is republished')
     w.step('verify-fastforward',
            goal='the offending commits are unpushed, so nothing published is rewritten')
     w.step('commit', goal='record every uncommitted change, because the rewrite eats them')
@@ -167,8 +172,43 @@ def repo_surgery() -> Workflow:
     return w
 
 
+def new_repo() -> Workflow:
+    """Put a directory under git and push it to a new remote.
+
+    Performed FIVE times by hand on 2026-07-29 — papers, book, spectral-backend, lasergear,
+    laserfield-private — and got wrong once: a Telegram bot token went to GitHub inside
+    laserfield's history and GitGuardian caught it about an hour later.
+
+    The check that cleared it grepped four patterns (sk-, pypi-, ghp_, AKIA) and reported
+    "0 hits". A Telegram token matches none of them. The failure was not the missing
+    pattern, it was reading a four-pattern grep as a secret scan.
+
+    So `inspect-secrets` is its own declared step, run against HISTORY rather than the
+    working tree — the leaked token was absent from the tip and present in one commit from
+    May, so scanning the checkout would still have said clean. `push` is irreversible and
+    outward because a secret that reaches a remote is leaked whatever happens next; the
+    history can be rewritten and the credential still has to be revoked.
+    """
+    w = Workflow(goal='put a directory under git and push it somewhere safe')
+    w.step('inspect-size',
+           goal='no file is large enough to make the repo unpushable')
+    w.step('inspect-secrets',
+           goal='lb_secrets finds nothing in the working tree OR the history')
+    w.step('edit-gitignore',
+           goal='build output, virtualenvs and caches are excluded before the first commit')
+    w.step('verify-staged',
+           goal='what is about to be committed is what was actually checked')
+    w.step('commit', goal='the initial history exists locally')
+    w.step('push', goal='send it to a new private remote',
+           irreversible=True, outward=True)
+    w.step('verify-remote',
+           goal='clone it back and confirm the remote holds what the local does, and no secret')
+    return w
+
+
 METHODS = {'release': release, 'deploy': deploy, 'grammar-bump': grammar_bump,
-           'research-note': research_note, 'repo-surgery': repo_surgery}
+           'research-note': research_note, 'repo-surgery': repo_surgery,
+           'new-repo': new_repo}
 
 
 def main():
