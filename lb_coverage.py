@@ -325,6 +325,24 @@ def main():
     except Exception:
         ev = {}
 
+    # TEMPORARY DIAGNOSTIC (added 2026-07-30, remove once the mid-turn question is
+    # answered). Every real invocation's event name + key shape, unconditionally, above
+    # every branch below — so a mid-turn user message that arrives DURING a live session
+    # leaves first-hand evidence of what Claude Code actually sent, instead of a guess.
+    # Deliberately logs KEYS, not values: no prompt text captured.
+    try:
+        diag_path = pathlib.Path.home() / '.config' / 'laserbrain' / 'hook-invocations.jsonl'
+        diag_path.parent.mkdir(parents=True, exist_ok=True)
+        with diag_path.open('a') as _df:
+            _df.write(json.dumps({
+                'ts': datetime.datetime.now().isoformat(),
+                'event_name_raw': ev.get('hookEventName') or ev.get('hook_event_name'),
+                'keys': sorted(ev.keys()),
+                'pid': os.getpid(),
+            }) + '\n')
+    except Exception:
+        pass
+
     # Prefer the shared implementation when the installed package has Grok support.
     try:
         from laserbrain.runtime import from_claude_code, from_grok, Session, session_id_of
