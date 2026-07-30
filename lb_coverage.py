@@ -54,6 +54,48 @@ def _mark_user_turn():
         pass          # fail open: a missing flag only restores the old behaviour
 
 
+_PROMPT_WRAPPERS = ('user_query', 'user_prompt', 'query', 'prompt')
+_NOT_A_TASK = {
+    'hello', 'hi', 'hey', 'yo', 'hiya', 'hello there', 'hey there', 'good morning',
+    'good afternoon', 'good evening', 'morning', 'thanks', 'thank you', 'ty', 'ok',
+    'okay', 'k', 'cool', 'nice', 'great', 'sure', 'yes', 'no', 'yep', 'nope', 'test',
+    'ping', 'you there', 'are you there', 'hello?', 'still there',
+}
+
+
+def clean_prompt(text):
+    """Unwrap a runtime's prompt envelope. DUPLICATED from laserbrain.runtime, per the
+    convention above — test_hook_parity.py fails if the copies disagree.
+
+    Until 2026-07-29 this fallback stored the prompt RAW while the SDK path cleaned it, so
+    which of the two ran decided whether the ground was a task or a lump of markup. The
+    fallback is the path that runs when the SDK import fails, which is exactly when nobody
+    is watching.
+    """
+    t = str(text or '').strip()
+    for tag in _PROMPT_WRAPPERS:
+        open_t, close_t = f'<{tag}>', f'</{tag}>'
+        if open_t in t and close_t in t:
+            t = t[t.index(open_t) + len(open_t):t.index(close_t)]
+    return t.strip()
+
+
+def is_groundable(text):
+    """Can this prompt be the fixed reference every later Φ is measured against?
+
+    DUPLICATED from laserbrain.runtime. Rejects slash commands and a closed set of
+    greetings, and deliberately does NOT impose a minimum length: this project's real
+    tasks are routinely two words ('map all', 'reconcile', 'fix them'), so a length rule
+    would discard the terse seeds that become the largest work.
+    """
+    t = clean_prompt(text)
+    if not t:
+        return False
+    if t.startswith('/'):
+        return False
+    return t.strip().lower().rstrip('.!?') not in _NOT_A_TASK
+
+
 def infer_progress(events):
     """advancing | stuck | circling, from the tool trace alone.
 
@@ -437,8 +479,8 @@ def main():
         if prompt is None:
             prompt = ev.get('userPrompt') if ev.get('userPrompt') is not None else ev.get('promptText')
         if prompt is not None and not tool:
-            if not s.get('goal'):
-                s['goal'] = str(prompt)[:400]
+            if not s.get('goal') and is_groundable(prompt):
+                s['goal'] = clean_prompt(prompt)[:400]
             # Mark that the NEXT check_state is a re-ground, not a drift.
             #
             # check_state receives only (goal, progress, distance), and none of those says
