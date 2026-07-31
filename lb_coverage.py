@@ -54,6 +54,86 @@ def _mark_user_turn():
         pass          # fail open: a missing flag only restores the old behaviour
 
 
+# Byte offsets of the transcripts already scanned for queued messages, keyed by path.
+QUEUE_SCAN = pathlib.Path.home() / '.config' / 'laserbrain' / 'queue-scan.json'
+
+
+def _mark_user_turn_if_queued(ev):
+    """Catch mid-turn messages, which never reach the UserPromptSubmit hook at all.
+
+    Measured 2026-07-30 over a full session: 37 top-level user messages produced exactly
+    37 UserPromptSubmit firings, a clean 1:1 — while four messages typed *while the agent
+    was working* produced none. They are not user events as far as the hook is concerned;
+    the transcript records them as `{"type": "queue-operation", "operation": "enqueue"}`.
+    So every redirection issued mid-turn left the ground unchanged and was then measured
+    as drift against the goal it had just replaced.
+
+    `promptId` is no help here — it is stamped per top-level turn and stays fixed across
+    the queued messages inside one (verified on the same session), so a change in it can
+    never signal an arrival. The enqueue record is the only first-hand evidence, and the
+    transcript path rides along on every PostToolUse payload.
+
+    Scans only the bytes appended since the last look, and on first sight of a transcript
+    records its size WITHOUT firing — otherwise the initial scan would replay every
+    historical enqueue at once and reground on ancient history.
+    """
+    path = ev.get('transcript_path') or ev.get('transcriptPath')
+    if not path:
+        return
+    try:
+        transcript = pathlib.Path(path)
+        size = transcript.stat().st_size
+    except Exception:
+        return
+
+    try:
+        state = json.loads(QUEUE_SCAN.read_text())
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+
+    key = str(path)
+    first_sight = key not in state
+    offset = state.get(key, 0)
+    if not isinstance(offset, int) or offset > size:
+        offset = 0            # truncated or rotated out from under us
+    if offset == size and not first_sight:
+        return
+
+    found = False
+    try:
+        with transcript.open('r', errors='replace') as fh:
+            if not first_sight:
+                fh.seek(offset)
+                for line in fh:
+                    if '"queue-operation"' not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if (rec.get('type') == 'queue-operation'
+                            and rec.get('operation') == 'enqueue'):
+                        found = True
+            fh.seek(0, os.SEEK_END)
+            state[key] = fh.tell()
+    except Exception:
+        return
+
+    # Bound the file: one entry per session transcript would otherwise accumulate forever.
+    if len(state) > 40:
+        state = dict(sorted(state.items(), key=lambda kv: kv[1])[-40:])
+    try:
+        QUEUE_SCAN.parent.mkdir(parents=True, exist_ok=True)
+        QUEUE_SCAN.write_text(json.dumps(state))
+    except Exception:
+        pass
+
+    if found:
+        _mark_user_turn()
+
+
 _PROMPT_WRAPPERS = ('user_query', 'user_prompt', 'query', 'prompt')
 _NOT_A_TASK = {
     'hello', 'hi', 'hey', 'yo', 'hiya', 'hello there', 'hey there', 'good morning',
@@ -325,23 +405,11 @@ def main():
     except Exception:
         ev = {}
 
-    # TEMPORARY DIAGNOSTIC (added 2026-07-30, remove once the mid-turn question is
-    # answered). Every real invocation's event name + key shape, unconditionally, above
-    # every branch below — so a mid-turn user message that arrives DURING a live session
-    # leaves first-hand evidence of what Claude Code actually sent, instead of a guess.
-    # Deliberately logs KEYS, not values: no prompt text captured.
-    try:
-        diag_path = pathlib.Path.home() / '.config' / 'laserbrain' / 'hook-invocations.jsonl'
-        diag_path.parent.mkdir(parents=True, exist_ok=True)
-        with diag_path.open('a') as _df:
-            _df.write(json.dumps({
-                'ts': datetime.datetime.now().isoformat(),
-                'event_name_raw': ev.get('hookEventName') or ev.get('hook_event_name'),
-                'keys': sorted(ev.keys()),
-                'pid': os.getpid(),
-            }) + '\n')
-    except Exception:
-        pass
+    # A message typed while the agent is working never arrives as a hook event, so this
+    # runs above every branch below: it is the only place a mid-turn redirection can be
+    # noticed at all. (The diagnostic that established this was removed 2026-07-30 once
+    # it had answered the question — see _mark_user_turn_if_queued for the measurement.)
+    _mark_user_turn_if_queued(ev)
 
     # Prefer the shared implementation when the installed package has Grok support.
     try:
