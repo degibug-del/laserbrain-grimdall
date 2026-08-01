@@ -340,9 +340,41 @@ def _verdict(resp):
         return None
 
     found = walk(resp) or {}
+    # `run` and `step` are the drift log's primary key, and carrying them here is what
+    # makes a catch joinable to the reading that was live when it happened. Before this
+    # the session file counted its own steps and the server counted its own, with no
+    # shared field: precision was computable and sensitivity was not, because a miss is
+    # only visible when you can say WHICH reading missed. Absent on servers older than
+    # 2026-08-01, so None means "this row predates the join", not "no run".
     return {'drifting': bool(found.get('drifting')),
             'reason': str(found.get('reason') or 'no-reading'),
-            'phi': found.get('phi')}
+            'phi': found.get('phi'),
+            'run': found.get('run'),
+            'run_step': found.get('step')}
+
+
+def _attribute(s, step):
+    """Which drift reading was live when something failed at session `step`.
+
+    A catch is the only evidence in this system that did not come from the agent grading
+    itself: a non-zero exit is the build disagreeing, and the build has no opinion about
+    the instrument. That makes catches the one place sensitivity can come from — but only
+    if a catch can name the reading it belongs to. It could not, so d-prime was reported
+    as "not computable, now or ever, from this corpus". This is the field that changes it.
+
+    `since` is carried because attribution decays. A failure one step after a reading was
+    almost certainly live under it; a failure fourteen steps later happened during a
+    stretch the instrument never saw, and calling that a MISS would blame the detector for
+    not firing on a step it was never shown. Anything analysing this must be free to
+    discard the far ones, which means the distance has to survive alongside the join.
+    """
+    checks = s.get('checks') or []
+    if not checks:
+        return {'run': None, 'run_step': None, 'since': None}
+    last = checks[-1]
+    return {'run': last.get('run'),
+            'run_step': last.get('run_step'),
+            'since': step - int(last.get('step') or 0)}
 
 
 def _resp(ev):
@@ -623,7 +655,12 @@ def main():
                                 'progress': str(ti.get('progress', '')),
                                 'distance': ti.get('distance'),
                                 'reason': v['reason'],
-                                'phi': v['phi']})
+                                'phi': v['phi'],
+                                # The join. `step` above counts tool calls in this session;
+                                # `run`/`run_step` name the row the server wrote. Two
+                                # counters that were never reconcilable now share a key.
+                                'run': v['run'],
+                                'run_step': v['run_step']})
             path.write_text(json.dumps(s, indent=2))
             return
 
@@ -642,7 +679,9 @@ def main():
 
         if _is_shell(tool) and not ok_flag:
             cmd = str(args.get('command', ''))[:120]
-            s['catches'].append({'step': step, 'by': 'build', 'what': f'non-zero exit: {cmd}'})
+            s['catches'].append({'step': step, 'by': 'build',
+                                 'what': f'non-zero exit: {cmd}',
+                                 **_attribute(s, step)})
 
         try:
             args_s = json.dumps(args, sort_keys=True, default=str)[:400]
