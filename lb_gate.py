@@ -23,14 +23,14 @@ TWO THINGS IT MUST NEVER DO:
              fails closed takes the session down with it. Every path exits 0 and the
              default is to permit.
 
-Grok notes (2026-07-25):
-  - WRITE_TOOLS must include search_replace (Grok's primary edit tool).
+Host notes (2026-07-25, from wiring a second host):
+  - WRITE_TOOLS must include search_replace: it is a primary edit tool on some hosts.
   - LASERBRAIN_AGENT is often missing on the hook process (MCP sets it, hooks do not);
-    fall back to session file agent so Grok does not self-block on its own claims.
+    fall back to the session file's agent so a host does not self-block on its own claims.
   - link entries use agent= or from= — accept both.
-  - search_tool is always allowed so a blocked Grok can re-discover laserbrain schemas
+  - search_tool is always allowed so a blocked agent can re-discover laserbrain schemas
     without burning the gate (discovery is read-only).
-  - Deny text is agent-aware (Claude MCP name vs Grok use_tool).
+  - Deny text is agent-aware: hosts differ in how a tool is invoked (see CHECK_HOWTO).
 """
 import sys, json, os, pathlib, fnmatch
 
@@ -54,11 +54,12 @@ LINK_LOG = pathlib.Path(os.environ.get('LASERBRAIN_LINK_LOG')
                         or _link_log_default())
 # Tools that change files. Reads are never gated on claims — orienting in someone else's
 # area is fine; editing it is not.
-# Claude: Edit / Write / NotebookEdit / StrReplace
-# Grok:   search_replace / write  (search_replace was missing until 2026-07-25 — claim gate blind)
+# Across hosts: Edit / Write / NotebookEdit / StrReplace / search_replace / write.
+# search_replace was missing until 2026-07-25, which left the claim gate blind on any
+# host that uses it as its primary edit tool.
 WRITE_TOOLS = (
     'edit', 'write', 'notebookedit', 'str_replace',
-    'search_replace',  # Grok Build primary edit tool
+    'search_replace',  # a primary edit tool on some hosts
 )
 
 # Steps without a spelled check before the gate closes. The number is not a taste
@@ -103,22 +104,24 @@ def min_coverage():
         return DEFAULT_MIN_COVERAGE
     return min(1.0, max(0.0, v))
 STATE_DIR = pathlib.Path.home() / '.claude' / 'laserbrain'
-# Shared corpus lives under ~/.claude/laserbrain for historical reasons (both agents).
+# Shared corpus lives under ~/.claude/laserbrain for historical reasons. The path names
+# one host and holds every agent's rows; moving it would orphan the existing corpus, so
+# it stays and this comment is the correction.
 # Alias doc: ~/.config/laserbrain/sessions → same path (see sync / rules).
 
 # Never gated. check_state is how you get out; reset_task starts a new ground; the read
 # tools are how an agent orients before spelling its state.
-# search_tool: Grok MCP discovery — read-only; blocking it deadlocks a Grok that needs
+# search_tool: MCP schema discovery — read-only; blocking it deadlocks an agent that needs
 # the schema before it can call check_state through use_tool.
 ALWAYS_ALLOW = (
     'check_state', 'reset_task', 'get_history', 'read_field', 'field_vocabulary',
     'speak_to_field', 'link_read', 'link_whoami', 'link_write', 'drift_grammar',
-    'search_tool',  # MCP schema discovery (Grok); not a side-effect tool
+    'search_tool',  # MCP schema discovery; not a side-effect tool
 )
 
 
 def entry_agent(r):
-    """Who authored a link row? Claude uses from=; Grok MCP uses agent=; payload.from too."""
+    """Who authored a link row? Hosts differ: some write from=, some agent=, some payload.from."""
     if not isinstance(r, dict):
         return 'unknown'
     who = r.get('from') or r.get('agent') or (r.get('payload') or {}).get('from')
@@ -188,8 +191,8 @@ def claimed_by_others(me):
         # on_behalf_of first — a forced close is made BY one agent FOR another, so crediting
         # it to the author credits the wrong party. Identical defect to the one fixed in
         # waves.current_wave() on 2026-07-25, and here it deadlocked the protocol outright:
-        # grok retired, `force-close --for grok` was recorded and printed success, and the
-        # gate still counted grok outstanding. So the wave never closed, the free-form
+        # one agent retired, `force-close --for <agent>` was recorded and printed success,
+        # and the gate still counted that agent outstanding. So the wave never closed, the free-form
         # release path below was never reached, and the gate went on holding files for an
         # agent that had gone — including refusing every edit to lb_gate.py itself.
         #
@@ -342,25 +345,39 @@ def resolve_me(ev, sess=None):
     return 'unknown'
 
 
-def check_howto(me):
-    """Agent-aware escape hatch text for the coverage deny message."""
-    if me == 'grok':
-        return (
-            'Call laserbrain__check_state via use_tool (tool_name="laserbrain__check_state") '
-            'ALONE — do not batch with other tools — with your CURRENT goal, progress '
-            '(advancing|stuck|circling) and distance 0-10, then reissue the blocked call. '
-            'If you need the schema first, search_tool is always allowed.'
-        )
-    return (
-        'Call mcp__laserbrain__check_state now with your CURRENT goal, progress '
-        '(advancing|stuck|circling) and distance 0-10, then reissue the blocked call. '
-        'Do not batch check_state with other tools (gate race).'
-    )
+#: Per-host invocation syntax lives in hosts.json, not here. Hosts genuinely differ in
+#: how a tool is called — one takes use_tool(tool_name=...), another an mcp__ prefix —
+#: and that difference is real. What was wrong was expressing it as a branch on a vendor
+#: name inside the gate: it made the instrument carry a list of which agents exist, which
+#: must be edited to support a host nobody has written yet. As config it is a one-line
+#: addition, and an unlisted host gets the generic text rather than someone else's.
+_HOSTS_PATH = pathlib.Path(__file__).with_name('hosts.json')
+try:
+    _HOSTS = json.loads(_HOSTS_PATH.read_text()).get('check_howto') or {}
+except Exception:
+    _HOSTS = {}
 
+CHECK_HOWTO_DEFAULT = _HOSTS.get('default') or (
+    'Call mcp__laserbrain__check_state now with your CURRENT goal, progress '
+    '(advancing|stuck|circling) and distance 0-10, then reissue the blocked call. '
+    'Do not batch check_state with other tools (gate race).'
+)
+
+
+def check_howto(me):
+    """The escape-hatch text for this host, or the generic one."""
+    return (_HOSTS.get('by_agent') or {}).get(
+        str(me or '').strip().lower(), CHECK_HOWTO_DEFAULT)
 
 def load_session(ev):
-    sid = (ev.get('session_id') or ev.get('sessionId')
-           or os.environ.get('GROK_SESSION_ID') or os.environ.get('CLAUDE_SESSION_ID'))
+    # Any HOST_SESSION_ID, not a hardcoded pair. A host this file has never heard of
+    # still identifies its own session.
+    sid = ev.get('session_id') or ev.get('sessionId')
+    if not sid:
+        for k in sorted(os.environ, key=len, reverse=True):
+            if k.endswith('_SESSION_ID') and os.environ.get(k):
+                sid = os.environ[k]
+                break
     if not sid:
         return None, None
     path = STATE_DIR / f'{sid}.json'
@@ -408,7 +425,7 @@ def main():
                 deny(f'laserbrain claim gate: {path} is claimed by {who} in the open wave.\n'
                      f'THIS CALL DID NOT RUN — nothing was written.\n'
                      f'Editing another agent\'s scope is the collision waves exist to prevent '
-                     f'(2026-07-25: app/locus edited while grok was building there).\n'
+                     f'(2026-07-25: a path was edited while another agent was building there).\n'
                      f'Either wait for {who} to close, or say so on the link and agree a '
                      f'handoff before touching it.\n'
                      f'(me={me}; set LASERBRAIN_AGENT on the hook env if this is wrong.)')

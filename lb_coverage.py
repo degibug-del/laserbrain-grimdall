@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """lb_coverage.py — PostToolUse / UserPromptSubmit / Stop hook for laserbrain coverage.
 
-Makes coverage automatic instead of remembered. Works for Claude Code (snake_case)
-and Grok Build (camelCase). Same session directory: ~/.claude/laserbrain.
+Makes coverage automatic instead of remembered. Reads both snake_case and camelCase
+hook payloads, so it works for any host that emits either.
 
 WHY THIS EXISTS. On 2026-07-24 a long, error-dense session produced ten independently
 caught errors and ONE laserbrain check across ~48 steps — 2% coverage. The agent
@@ -17,8 +17,8 @@ What it can do is:
   1. COUNT the steps (dogfood denominator).
   2. LOG catches it can see (non-zero shell exits).
   3. INTERRUPT when coverage lapses:
-       - Claude: PostToolUse additionalContext
-       - Grok: Stop gate with decision=block (PostToolUse stdout is ignored)
+       - hosts that read PostToolUse stdout: additionalContext
+       - hosts that ignore it: a Stop gate with decision=block
 
 SAFETY. Every path is wrapped; exits 0 unconditionally except intentional stop-blocks.
 A hook that crashes the tool it observes is worse than no hook.
@@ -27,6 +27,8 @@ import json, os, sys, pathlib, datetime
 
 NUDGE_AFTER = 8
 WINDOW, REPEAT, FAILS = 6, 3, 2   # must match laserbrain.observe — test_hook_parity.py pins this
+# Shared corpus. The path names one host for historical reasons and holds EVERY agent's
+# rows; moving it would orphan the existing corpus, so it stays.
 STATE_DIR = pathlib.Path.home() / '.claude' / 'laserbrain'
 # Written when the user speaks, consumed by mcp-server.mjs on the next check_state. A file
 # rather than shared memory because the hook and the MCP server are separate processes with
@@ -273,8 +275,7 @@ def load(path):
 def _sid(ev):
     return str(
         ev.get('session_id') or ev.get('sessionId')
-        or os.environ.get('GROK_SESSION_ID')
-        or os.environ.get('CLAUDE_SESSION_ID')
+        or os.environ.get('LASERBRAIN_SESSION_ID')
         or 'unknown'
     )
 
@@ -353,7 +354,7 @@ def _resp(ev):
 
 
 def _unwrap(tool, args):
-    """Grok may route MCP as use_tool with nested tool_name."""
+    """Some hosts route MCP through a wrapper tool with a nested tool_name."""
     if tool not in ('use_tool', 'CallMcpTool', 'call_mcp_tool', 'mcp_tool'):
         return tool, args
     nested = str(args.get('tool_name') or args.get('toolName') or args.get('name') or '')
@@ -381,10 +382,10 @@ def _is_shell(tool):
 
 def _event_name(ev):
     return str(ev.get('hookEventName') or ev.get('hook_event_name')
-               or os.environ.get('GROK_HOOK_EVENT') or '').lower()
+               or os.environ.get('LASERBRAIN_HOOK_EVENT') or '').lower()
 
 
-def _emit_claude_nudge(nudge, event='PostToolUse'):
+def _emit_inline_nudge(nudge, event='PostToolUse'):
     print(json.dumps({
         'hookSpecificOutput': {
             'hookEventName': event,
@@ -393,8 +394,9 @@ def _emit_claude_nudge(nudge, event='PostToolUse'):
     }))
 
 
-def _emit_grok_stop_block(nudge):
-    # Grok Stop hooks: decision=block feeds reason back and keeps the agent working.
+def _emit_stop_block(nudge):
+    # Where PostToolUse stdout is ignored, decision=block on Stop feeds the reason
+    # back and keeps the agent working.
     print(json.dumps({'decision': 'block', 'reason': nudge}))
 
 
@@ -411,13 +413,13 @@ def main():
     # it had answered the question — see _mark_user_turn_if_queued for the measurement.)
     _mark_user_turn_if_queued(ev)
 
-    # Prefer the shared implementation when the installed package has Grok support.
+    # Prefer the shared implementation when the installed package provides it.
     try:
-        from laserbrain.runtime import from_claude_code, from_grok, Session, session_id_of
+        from laserbrain.runtime import from_hook, Session, session_id_of
         has_runtime = True
     except Exception:
         has_runtime = False
-        from_claude_code = from_grok = Session = session_id_of = None
+        from_hook = Session = session_id_of = None
 
     ename = _event_name(ev)
 
@@ -431,11 +433,16 @@ def main():
     # A signal every reader depends on cannot live behind a branch.
     if 'posttooluse' in ename:
         _record_evidence(_event_ok(ev, ename), f'{_tool(ev)}|{str(_args(ev))[:200]}')
-    is_grok = bool(os.environ.get('GROK_SESSION_ID') or os.environ.get('GROK_HOOK_EVENT')
-                   or ev.get('sessionId') is not None or ev.get('toolName') is not None
-                   or ev.get('toolInput') is not None)
+    # WHICH PROTOCOL SHAPE, not which vendor. camelCase payloads (sessionId, toolName,
+    # toolInput) need a different injection path from snake_case ones — that difference is
+    # real and stays. Calling the variable `is_grok` made a fact about payload spelling
+    # look like a fact about who sent it, and two hosts can share a convention.
+    camel_shape = bool(ev.get('sessionId') is not None or ev.get('toolName') is not None
+                       or ev.get('toolInput') is not None
+                       or any(k.endswith('_HOOK_EVENT') and os.environ.get(k)
+                              for k in os.environ))
 
-    # ── Stop gate (Grok primary injection path) ─────────────────────────────
+    # ── Stop gate (primary injection path where PostToolUse stdout is ignored) ──
     # Only genuine turn ends. Session-end Stop is observe-only.
     if 'stop' in ename and 'failure' not in ename:
         reason = str(ev.get('reason') or '')
@@ -461,10 +468,10 @@ def main():
                             f'detection result below 50%. Call check_state now with your CURRENT '
                             f'goal, progress (advancing|stuck|circling) and distance 0-10.')
             if warn:
-                if is_grok:
-                    _emit_grok_stop_block(warn)
+                if camel_shape:
+                    _emit_stop_block(warn)
                 else:
-                    _emit_claude_nudge(warn, event='Stop')
+                    _emit_inline_nudge(warn, event='Stop')
         except Exception:
             pass
         return
@@ -472,10 +479,10 @@ def main():
     # ── Shared Session path when import works ───────────────────────────────
     if has_runtime:
         try:
-            if is_grok:
-                nudge = from_grok(ev, directory=str(STATE_DIR))
+            if camel_shape:
+                nudge = from_hook(ev, directory=str(STATE_DIR))
             else:
-                nudge = from_claude_code(ev, directory=str(STATE_DIR))
+                nudge = from_hook(ev, directory=str(STATE_DIR))
             # Session-start / prompt: remind multi-agent link hygiene + honest progress.
             promptish = (ev.get('prompt') is not None
                          or ev.get('userPrompt') is not None
@@ -531,12 +538,12 @@ def main():
                         )
             except Exception:
                 pass
-            if extras and not is_grok:
-                _emit_claude_nudge('\n'.join(extras) + (('\n' + nudge) if nudge else ''))
-            elif nudge and not is_grok:
-                _emit_claude_nudge(nudge)
-            elif extras and is_grok and promptish:
-                # Grok UserPromptSubmit: try Claude-compatible additionalContext.
+            if extras and not camel_shape:
+                _emit_inline_nudge('\n'.join(extras) + (('\n' + nudge) if nudge else ''))
+            elif nudge and not camel_shape:
+                _emit_inline_nudge(nudge)
+            elif extras and camel_shape and promptish:
+                # UserPromptSubmit: try additionalContext, which some hosts honour.
                 print(json.dumps({
                     'hookSpecificOutput': {
                         'hookEventName': 'UserPromptSubmit',
@@ -544,7 +551,7 @@ def main():
                     }
                 }))
             elif nudge and is_grok:
-                # PostToolUse stdout ignored on Grok — still record; Stop will gate.
+                # Where PostToolUse stdout is ignored — still record; Stop will gate.
                 pass
             return
         except Exception:
@@ -651,9 +658,9 @@ def main():
         since = step - last
         path.write_text(json.dumps(s, indent=2))
 
-        if since >= NUDGE_AFTER and since % NUDGE_AFTER == 0 and not is_grok:
+        if since >= NUDGE_AFTER and since % NUDGE_AFTER == 0 and not camel_shape:
             cov = len(s['checks']) / step if step else 0
-            _emit_claude_nudge(
+            _emit_inline_nudge(
                 f'laserbrain: {since} steps since your last check_state '
                 f'(coverage {cov:.0%} over {step} steps). dogfood.py withholds any '
                 f'detection result below 50%. Call check_state now with your CURRENT '
