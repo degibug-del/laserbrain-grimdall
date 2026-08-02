@@ -103,7 +103,13 @@ def min_coverage():
     except (TypeError, ValueError):
         return DEFAULT_MIN_COVERAGE
     return min(1.0, max(0.0, v))
-STATE_DIR = pathlib.Path.home() / '.claude' / 'laserbrain'
+# Overridable so the instrument can be run UNDER TEST without writing into the corpus it
+# is measured against. laserbrain-trial runs the real hooks in both arms; without this every
+# trial run would append synthetic sessions to the shared record that corpus-map.py
+# summarises and the paper renders its figures from. Default is unchanged, so nothing that
+# does not set the variable behaves differently.
+STATE_DIR = pathlib.Path(os.environ.get('LASERBRAIN_STATE_DIR')
+                         or pathlib.Path.home() / '.claude' / 'laserbrain')
 # Shared corpus lives under ~/.claude/laserbrain for historical reasons. The path names
 # one host and holds every agent's rows; moving it would orphan the existing corpus, so
 # it stays and this comment is the correction.

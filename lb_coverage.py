@@ -29,7 +29,13 @@ NUDGE_AFTER = 8
 WINDOW, REPEAT, FAILS = 6, 3, 2   # must match laserbrain.observe — test_hook_parity.py pins this
 # Shared corpus. The path names one host for historical reasons and holds EVERY agent's
 # rows; moving it would orphan the existing corpus, so it stays.
-STATE_DIR = pathlib.Path.home() / '.claude' / 'laserbrain'
+# Overridable so the instrument can be run UNDER TEST without writing into the corpus it
+# is measured against. laserbrain-trial runs the real hooks in both arms; without this every
+# trial run would append synthetic sessions to the shared record that corpus-map.py
+# summarises and the paper renders its figures from. Default is unchanged, so nothing that
+# does not set the variable behaves differently.
+STATE_DIR = pathlib.Path(os.environ.get('LASERBRAIN_STATE_DIR')
+                         or pathlib.Path.home() / '.claude' / 'laserbrain')
 # Written when the user speaks, consumed by mcp-server.mjs on the next check_state. A file
 # rather than shared memory because the hook and the MCP server are separate processes with
 # no channel between them; this is the whole channel.
