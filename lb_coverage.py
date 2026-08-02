@@ -23,7 +23,7 @@ What it can do is:
 SAFETY. Every path is wrapped; exits 0 unconditionally except intentional stop-blocks.
 A hook that crashes the tool it observes is worse than no hook.
 """
-import json, os, sys, pathlib, datetime
+import json, os, re, sys, pathlib, datetime
 
 NUDGE_AFTER = 8
 WINDOW, REPEAT, FAILS = 6, 3, 2   # must match laserbrain.observe — test_hook_parity.py pins this
@@ -268,6 +268,26 @@ def _event_ok(ev, ename):
         if r.get('error') or r.get('is_error') or r.get('isError'):
             return False
     return True
+
+
+# The coverage gate's own refusal — never a catch. runtime.py carries the long version of
+# why; the short version is that the gate fires BECAUSE the instrument was quiet, so scoring
+# its blocks as errors the instrument missed makes the hit rate 0% before any data exists.
+# Measured 2026-08-02: all 8 of sensitivity.py's "misses" were this.
+#
+# Narrow on purpose. "laserbrain claim gate:" and "laserbrain safety:" catch conditions the
+# instrument did not create, and stay catches.
+_SELF_REFUSAL_RE = re.compile(r'laserbrain gate:.*?\bcoverage\b', re.IGNORECASE | re.DOTALL)
+
+
+def _is_self_refusal(ev):
+    """True when the response is the coverage gate stopping its own agent."""
+    r = _resp(ev)
+    try:
+        text = r if isinstance(r, str) else json.dumps(r, default=str)
+    except Exception:
+        return False
+    return bool(_SELF_REFUSAL_RE.search(text or ''))
 
 
 def load(path):
@@ -683,10 +703,11 @@ def main():
             elif resp0.get('error') or resp0.get('is_error') or resp0.get('isError'):
                 ok_flag = False
 
-        if _is_shell(tool) and not ok_flag:
+        if _is_shell(tool) and not ok_flag and not _is_self_refusal(ev):
             cmd = str(args.get('command', ''))[:120]
+            # `clean`: written by code that excludes the coverage gate. See runtime.py.
             s['catches'].append({'step': step, 'by': 'build',
-                                 'what': f'non-zero exit: {cmd}',
+                                 'what': f'non-zero exit: {cmd}', 'clean': True,
                                  **_attribute(s, step)})
 
         try:
