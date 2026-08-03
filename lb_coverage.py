@@ -290,12 +290,39 @@ def _is_self_refusal(ev):
     return bool(_SELF_REFUSAL_RE.search(text or ''))
 
 
+def _probe_arm(sid):
+    """Which gate regime this session runs under. Imported from the gate, never re-derived.
+
+    lb_gate.py owns the assignment because it owns the thresholds. Copying the hash here
+    would put the definition of an experiment's arms in two files, and the first time one
+    drifted, every session between would be labelled one thing and treated as another —
+    which is not a bug that announces itself, it is a silently ruined comparison.
+
+    Returns None when the gate is not importable, and None is written rather than a guess:
+    a session whose arm is unknown must be droppable by the analysis, not counted as
+    'control' because that was the convenient default.
+    """
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from lb_gate import probe_arm
+        return probe_arm(sid)
+    except Exception:
+        return None
+
+
 def load(path):
     try:
-        return json.loads(path.read_text())
+        d = json.loads(path.read_text())
     except Exception:
-        return {'id': path.stem, 'started': datetime.datetime.now().isoformat(timespec='seconds'),
-                'goal': None, 'steps': 0, 'checks': [], 'inferred': [], 'catches': [], 'events': []}
+        d = {'id': path.stem, 'started': datetime.datetime.now().isoformat(timespec='seconds'),
+             'goal': None, 'steps': 0, 'checks': [], 'inferred': [], 'catches': [], 'events': []}
+    # STORED, not recomputed at read time. The assignment is a pure function of the session
+    # id, so an analysis could derive it — until DEFAULT_PROBE_SHARE changes, at which point
+    # every historical session is silently reassigned and every past comparison is rewritten
+    # to match the present. Writing it once freezes what actually happened.
+    if 'probe_arm' not in d:
+        d['probe_arm'] = _probe_arm(d.get('id') or path.stem)
+    return d
 
 
 def _sid(ev):

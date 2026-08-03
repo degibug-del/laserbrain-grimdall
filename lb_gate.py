@@ -32,7 +32,7 @@ Host notes (2026-07-25, from wiring a second host):
     without burning the gate (discovery is read-only).
   - Deny text is agent-aware: hosts differ in how a tool is invoked (see CHECK_HOWTO).
 """
-import sys, json, os, pathlib, fnmatch
+import sys, json, os, pathlib, fnmatch, hashlib
 
 
 def _link_log_default():
@@ -74,6 +74,61 @@ WRITE_TOOLS = (
 # honest trade: the corpus stays attributable and dense enough to be worth reading, and
 # the gate stays closed until someone decides the detection result is worth 1.
 BLOCK_AFTER = 4
+
+# ── the probe, which exists because the number above cannot otherwise be checked ──
+#
+# Everything in the paragraph above is a SIMULATION. 4 -> 20% is arithmetic about how often
+# an agent doing the minimum would check, not a measurement of whether 4 is better than 12
+# at anything. Measured on 2026-08-02, drift against steps-since-own-check reads:
+#
+#     2-3 steps    18/224    8.0%
+#     4-7 steps   154/1397  11.0%     z = 1.35, not significant
+#     8-15 steps    0/5      five readings
+#
+# and the reason the third row is empty is this gate. 85% of every gap ever recorded sits
+# in 4-7 because the gate puts it there, and gaps of 8+ are 0.31% of the sample. The
+# interval is being evaluated against data the interval produced, which is the same
+# circularity that made the gate's own blocks count as evidence against the instrument.
+#
+# So a stable minority of sessions run relaxed, and both arms are tagged. This costs
+# coverage on those sessions ON PURPOSE — that is the measurement, not a side effect.
+#
+# BOTH THRESHOLDS MOVE TOGETHER, and they have to. Relaxing only BLOCK_AFTER would change
+# nothing: the coverage term fires as soon as cov drops under the floor, which it does
+# immediately at a 12-step cadence, so the gate would close at 20% coverage anyway and the
+# long gaps would never happen. The relaxed floor is the simulated figure for a 12-step
+# cadence from the table above.
+#
+# Assignment is a hash of the session id, not a coin flip: it must not change mid-run, must
+# survive the hook being re-entered on every tool call, and must be reproducible from the
+# session file alone when someone asks months later which arm a run was in.
+RELAXED_BLOCK_AFTER = 12
+RELAXED_MIN_COVERAGE = 0.08
+DEFAULT_PROBE_SHARE = 15                      # percent of sessions, 0 disables
+
+
+def probe_share():
+    """Percent of sessions assigned to the relaxed arm. 0 turns the probe off."""
+    try:
+        v = int(os.environ.get('LASERBRAIN_PROBE_SHARE', DEFAULT_PROBE_SHARE))
+    except (TypeError, ValueError):
+        return DEFAULT_PROBE_SHARE
+    return min(100, max(0, v))
+
+
+def probe_arm(session_id):
+    """'relaxed' or 'control', stable for the life of a session id.
+
+    Deterministic so that re-running the analysis, or reading a session file a month from
+    now, yields the same answer without anything having been stored — and so the hook,
+    which runs afresh on every single tool call, cannot flip an agent between arms
+    mid-task and destroy the comparison it exists to make.
+    """
+    share = probe_share()
+    if not share or not session_id:
+        return 'control'
+    h = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()[:8]
+    return 'relaxed' if int(h, 16) % 100 < share else 'control'
 
 # ── the coverage floor, in ONE place ────────────────────────────────────────────
 # The paragraph above records a real decision: 50% coverage means a check between every
@@ -442,7 +497,17 @@ def main():
     since = steps_since_check(sess)
     steps = int(sess.get('steps', 0) or 0)
     cov = (len(sess.get('checks') or []) / steps) if steps else 0.0
+
+    # Which arm of the probe this session is in. Both thresholds move together or neither
+    # does — see RELAXED_BLOCK_AFTER. An explicit LASERBRAIN_MIN_COVERAGE always wins, so
+    # a benchmark that sets the floor deliberately is never quietly overridden by an
+    # experiment it did not ask to join.
+    arm = probe_arm(sid)
+    block_after = BLOCK_AFTER
     floor = min_coverage()
+    if arm == 'relaxed' and 'LASERBRAIN_MIN_COVERAGE' not in os.environ:
+        block_after = RELAXED_BLOCK_AFTER
+        floor = RELAXED_MIN_COVERAGE
 
     # Two ways to be gated, and they answer different questions.
     #
@@ -455,7 +520,7 @@ def main():
     # makes compliance mean the thing it is supposed to mean. It also self-corrects in
     # the agent's favour: front-load checks and the coverage term stays quiet, so
     # discipline early buys slack later rather than being forgotten.
-    late = since >= BLOCK_AFTER
+    late = since >= block_after
     thin = steps >= 8 and cov < floor          # ignore the first few steps, where one
     if not (late or thin):                     # check swings coverage wildly
         return
