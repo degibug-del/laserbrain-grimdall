@@ -316,12 +316,12 @@ def load(path):
     except Exception:
         d = {'id': path.stem, 'started': datetime.datetime.now().isoformat(timespec='seconds'),
              'goal': None, 'steps': 0, 'checks': [], 'inferred': [], 'catches': [], 'events': []}
-    # STORED, not recomputed at read time. The assignment is a pure function of the session
-    # id, so an analysis could derive it — until DEFAULT_PROBE_SHARE changes, at which point
-    # every historical session is silently reassigned and every past comparison is rewritten
-    # to match the present. Writing it once freezes what actually happened.
-    if 'probe_arm' not in d:
-        d['probe_arm'] = _probe_arm(d.get('id') or path.stem)
+    # probe_arm is NOT stamped here any more. It was, for a day, and lost every single
+    # write: the SDK's Session in laserbrain/runtime.py owns the same file, holds its dict
+    # in memory across this hook's writes, and saves the whole thing back — so the last
+    # writer drops the other's keys. Checked 2026-08-03: not one session file carried the
+    # arm, including the live one, so the probe was applying arms and recording none.
+    # lb_gate.record_arm appends it to arms.jsonl instead, where there is one writer.
     return d
 
 

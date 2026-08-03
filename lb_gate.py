@@ -116,6 +116,41 @@ def probe_share():
     return min(100, max(0, v))
 
 
+def record_arm(session_id, arm, state_dir):
+    """Append this session's arm to arms.jsonl, once. Never rewrites anything.
+
+    WHY NOT IN THE SESSION FILE, which is where it lived for a day and lost every write
+
+    Two long-lived processes own ~/.claude/laserbrain/<sid>.json: this hook, and the SDK's
+    Session in laserbrain/runtime.py. Both do read-modify-write of the WHOLE dict, and the
+    SDK holds its copy in memory across the hook's writes — so whichever saves last drops
+    the other's keys. `probe_arm` was stamped by the hook and silently clobbered every
+    time. Checked 2026-08-03: not one session file carried it, including the live one, so
+    the arms were being applied and never recorded and the probe was collecting nothing.
+
+    Append-only with one writer has neither problem. It is the same argument laserfield
+    makes for reading /history straight off the log: "the log is append-only and the field
+    loop is the only writer, so a reader can never see a torn row."
+
+    Recorded once per session — the first gated call — because the arm cannot change.
+    """
+    try:
+        log = pathlib.Path(state_dir) / 'arms.jsonl'
+        if log.exists():
+            with open(log) as fh:
+                for line in fh:
+                    if f'"{session_id}"' in line:
+                        return
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, 'a') as fh:
+            fh.write(json.dumps({'session': str(session_id), 'arm': arm,
+                                 'share': probe_share(),
+                                 'block_after': RELAXED_BLOCK_AFTER if arm == 'relaxed' else BLOCK_AFTER,
+                                 'at': __import__('datetime').datetime.now().isoformat(timespec='seconds')}) + '\n')
+    except Exception:
+        pass          # never let bookkeeping break the gate
+
+
 def probe_arm(session_id):
     """'relaxed' or 'control', stable for the life of a session id.
 
@@ -503,6 +538,7 @@ def main():
     # a benchmark that sets the floor deliberately is never quietly overridden by an
     # experiment it did not ask to join.
     arm = probe_arm(sid)
+    record_arm(sid, arm, STATE_DIR)     # append-only; the session file loses this race
     block_after = BLOCK_AFTER
     floor = min_coverage()
     if arm == 'relaxed' and 'LASERBRAIN_MIN_COVERAGE' not in os.environ:
