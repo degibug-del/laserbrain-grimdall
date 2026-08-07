@@ -25,6 +25,40 @@ A hook that crashes the tool it observes is worse than no hook.
 """
 import json, os, re, sys, pathlib, datetime
 
+# ONE STATE ROOT — see lb_paths.py. Loaded by absolute path rather than by name: this
+# hook is invoked from settings.json, from a synced copy under ~/.grok, and from
+# tests in another directory, so `import lb_paths` would resolve only sometimes.
+import importlib.util as _ilu
+_paths = None
+try:
+    _spec = _ilu.spec_from_file_location(
+        'lb_paths', str(pathlib.Path(__file__).resolve().parent / 'lb_paths.py'))
+    _paths = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_paths)
+except Exception as _e:                              # noqa: BLE001
+    # A HOOK MUST STILL LOAD. lb_paths.py is a FOURTH file the hooks now depend on, and
+    # every way this file travels copies a fixed list: sync_from_icloud.sh named three, and
+    # test_proportional_gate copies lb_gate.py alone into a temp directory to corrupt it.
+    # An ImportError at module scope happens ABOVE the handler that exists to fail open, so
+    # a missing sibling would not fail open — it would take the hook out entirely, and on
+    # the Grok host that reads as a deadlock rather than as a missing file.
+    #
+    # So: fall back to the historical defaults, which is what an unset environment resolves
+    # to anyway, and SAY SO. Silent degradation here would mean two hosts writing to
+    # different roots with nothing to indicate it.
+    import sys as _sys, types as _t
+    print(f'laserbrain: lb_paths.py unavailable ({type(_e).__name__}: {_e}) — using the '
+          f'historical defaults; LASERBRAIN_HOME will be IGNORED in this process. '
+          f'Run sync_from_icloud.sh.', file=_sys.stderr)
+    _paths = _t.SimpleNamespace(
+        home=lambda: None,
+        config_dir=lambda: pathlib.Path.home() / '.config' / 'laserbrain',   # one-root: fallback
+        sessions_dir=lambda: pathlib.Path(
+            os.environ['LASERBRAIN_STATE_DIR']).expanduser()
+            if os.environ.get('LASERBRAIN_STATE_DIR')
+            else pathlib.Path.home() / '.claude' / 'laserbrain',   # one-root: fallback
+        config=lambda *p: (pathlib.Path.home() / '.config' / 'laserbrain').joinpath(*p))  # one-root: fallback
+
 NUDGE_AFTER = 8
 WINDOW, REPEAT, FAILS = 6, 3, 2   # must match laserbrain.observe — test_hook_parity.py pins this
 # Shared corpus. The path names one host for historical reasons and holds EVERY agent's
@@ -35,11 +69,11 @@ WINDOW, REPEAT, FAILS = 6, 3, 2   # must match laserbrain.observe — test_hook_
 # summarises and the paper renders its figures from. Default is unchanged, so nothing that
 # does not set the variable behaves differently.
 STATE_DIR = pathlib.Path(os.environ.get('LASERBRAIN_STATE_DIR')
-                         or pathlib.Path.home() / '.claude' / 'laserbrain')
+                         or _paths.sessions_dir())
 # Written when the user speaks, consumed by mcp-server.mjs on the next check_state. A file
 # rather than shared memory because the hook and the MCP server are separate processes with
 # no channel between them; this is the whole channel.
-USER_TURN = pathlib.Path.home() / '.config' / 'laserbrain' / 'user-turn'
+USER_TURN = _paths.config('user-turn')
 
 
 def _mark_user_turn():
@@ -63,7 +97,7 @@ def _mark_user_turn():
 
 
 # Byte offsets of the transcripts already scanned for queued messages, keyed by path.
-QUEUE_SCAN = pathlib.Path.home() / '.config' / 'laserbrain' / 'queue-scan.json'
+QUEUE_SCAN = _paths.config('queue-scan.json')
 
 
 def _mark_user_turn_if_queued(ev):
@@ -205,7 +239,7 @@ def infer_progress(events):
     return 'stuck' if trailing >= FAILS else 'advancing'
 
 
-EVIDENCE = pathlib.Path.home() / '.config/laserbrain/evidence.json'
+EVIDENCE = _paths.config('evidence.json')
 
 
 def _record_evidence(ok, sig=''):
@@ -386,8 +420,30 @@ def _verdict(resp):
         elif isinstance(x, str):
             t = x.strip()
             if t[:1] in ('{', '['):
+                # SALVAGE THE PREFIX. json.loads() demands the WHOLE string be one value, so
+                # a single character appended after the payload threw the entire reading away.
+                #
+                # Not hypothetical: laserbrain appends its own honesty note to check_state
+                # responses — "distance has not fallen across the last two checks" — and that
+                # note fires very nearly when the judgment layer decides to speak. Measured
+                # 2026-08-05 on one run: server steps 2-5 parsed and were stored; steps 6-9
+                # were exactly the four carrying an `unbacked` judgment, and all four recorded
+                # `no-reading` with every field None. Not only the judgment — reason, phi,
+                # anchored and goal_score went with it.
+                #
+                # So the instrument went blind precisely when it had the most to say, and did
+                # it to itself. Across the whole corpus that is 0 of 2,555 drift rows and 0 of
+                # 2,157 session rows carrying a judgment, while the field tested green.
+                #
+                # raw_decode reads the first complete value and stops, which fixes it for ANY
+                # trailing text rather than only for ours.
                 try:
                     return walk(json.loads(t), depth + 1)
+                except Exception:
+                    pass
+                try:
+                    obj, _end = json.JSONDecoder().raw_decode(t)
+                    return walk(obj, depth + 1)
                 except Exception:
                     return None
         return None
@@ -399,11 +455,32 @@ def _verdict(resp):
     # shared field: precision was computable and sensitivity was not, because a miss is
     # only visible when you can say WHICH reading missed. Absent on servers older than
     # 2026-08-01, so None means "this row predates the join", not "no run".
+    # THE JUDGMENT LAYER WAS NOT RECORDED, and it is the layer that gives the strongest
+    # advice the instrument owns. `reason` names the reading; `judgment` names what the
+    # harness told the agent to DO about the run — abandon, wrong-problem, repeating,
+    # narrow. Nothing in the corpus held it, so on 2026-08-04 a bug that attached
+    # `abandon` to the first check of a replaced goal could be found only by it happening
+    # to me while I watched. Once the field existed the same question took one query: the
+    # exposure was 64 regrounds at step >= 13, 3.5% of every recorded check.
+    #
+    # `anchored` and `goal_score` come along for the same reason. anchored is the fraction
+    # of Phi resting outside the agent's own account of itself — 0.5 on the published
+    # calibration — and it has been reported on every verdict and stored on none, which
+    # makes "does corroboration predict a true catch" unanswerable. goal_score says
+    # whether this is still the errand that was asked for, which Phi does not: a faithful
+    # goal sits at high Phi when the work is hard.
+    #
+    # All four are absent on older servers, so None means "this row predates the field",
+    # never "there was no judgment".
+    j = found.get('judgment') or {}
     return {'drifting': bool(found.get('drifting')),
             'reason': str(found.get('reason') or 'no-reading'),
             'phi': found.get('phi'),
             'run': found.get('run'),
-            'run_step': found.get('step')}
+            'run_step': found.get('step'),
+            'judgment': (j.get('verdict') if isinstance(j, dict) else None),
+            'anchored': found.get('anchored'),
+            'goal_score': found.get('goal_score')}
 
 
 def _attribute(s, step):
@@ -713,7 +790,13 @@ def main():
                                 # `run`/`run_step` name the row the server wrote. Two
                                 # counters that were never reconcilable now share a key.
                                 'run': v['run'],
-                                'run_step': v['run_step']})
+                                'run_step': v['run_step'],
+                                # Written only when present, so a row from an older server
+                                # is absent rather than carrying a null that reads like a
+                                # measured "no judgment".
+                                **({'judgment': v['judgment']} if v['judgment'] else {}),
+                                **({'anchored': v['anchored']} if v['anchored'] is not None else {}),
+                                **({'goal_score': v['goal_score']} if v['goal_score'] is not None else {})})
             path.write_text(json.dumps(s, indent=2))
             return
 

@@ -34,6 +34,40 @@ Host notes (2026-07-25, from wiring a second host):
 """
 import sys, json, os, pathlib, fnmatch, hashlib
 
+# ONE STATE ROOT — see lb_paths.py. Loaded by absolute path rather than by name: this
+# hook is invoked from settings.json, from a synced copy under ~/.grok, and from
+# tests in another directory, so `import lb_paths` would resolve only sometimes.
+import importlib.util as _ilu
+_paths = None
+try:
+    _spec = _ilu.spec_from_file_location(
+        'lb_paths', str(pathlib.Path(__file__).resolve().parent / 'lb_paths.py'))
+    _paths = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_paths)
+except Exception as _e:                              # noqa: BLE001
+    # A HOOK MUST STILL LOAD. lb_paths.py is a FOURTH file the hooks now depend on, and
+    # every way this file travels copies a fixed list: sync_from_icloud.sh named three, and
+    # test_proportional_gate copies lb_gate.py alone into a temp directory to corrupt it.
+    # An ImportError at module scope happens ABOVE the handler that exists to fail open, so
+    # a missing sibling would not fail open — it would take the hook out entirely, and on
+    # the Grok host that reads as a deadlock rather than as a missing file.
+    #
+    # So: fall back to the historical defaults, which is what an unset environment resolves
+    # to anyway, and SAY SO. Silent degradation here would mean two hosts writing to
+    # different roots with nothing to indicate it.
+    import sys as _sys, types as _t
+    print(f'laserbrain: lb_paths.py unavailable ({type(_e).__name__}: {_e}) — using the '
+          f'historical defaults; LASERBRAIN_HOME will be IGNORED in this process. '
+          f'Run sync_from_icloud.sh.', file=_sys.stderr)
+    _paths = _t.SimpleNamespace(
+        home=lambda: None,
+        config_dir=lambda: pathlib.Path.home() / '.config' / 'laserbrain',   # one-root: fallback
+        sessions_dir=lambda: pathlib.Path(
+            os.environ['LASERBRAIN_STATE_DIR']).expanduser()
+            if os.environ.get('LASERBRAIN_STATE_DIR')
+            else pathlib.Path.home() / '.claude' / 'laserbrain',   # one-root: fallback
+        config=lambda *p: (pathlib.Path.home() / '.config' / 'laserbrain').joinpath(*p))  # one-root: fallback
+
 
 def _link_log_default():
     """~/.config/laserbrain/link.jsonl, falling back to the pre-rename tandem.jsonl.
@@ -45,7 +79,7 @@ def _link_log_default():
     honoured when it exists and the new one does not, so an un-migrated machine keeps its
     history instead of silently starting over.
     """
-    base = pathlib.Path.home() / '.config' / 'laserbrain'
+    base = _paths.config_dir()
     new, old = base / 'link.jsonl', base / 'tandem.jsonl'
     return old if (old.exists() and not new.exists()) else new
 
@@ -102,9 +136,38 @@ BLOCK_AFTER = 4
 # Assignment is a hash of the session id, not a coin flip: it must not change mid-run, must
 # survive the hook being re-entered on every tool call, and must be reproducible from the
 # session file alone when someone asks months later which arm a run was in.
+# How far past the threshold before the gate stops being proportional and refuses
+# everything. A MULTIPLE rather than a constant, so the relaxed arm escalates in the
+# same ratio and the probe keeps comparing like with like.
+HARD_MULTIPLE = 2
+
+# What may still run in the proportional band. An ALLOWLIST, and that direction is the
+# whole of its safety: a blocklist asks "is this one of the dangerous tools I thought of",
+# and the first version of this asked exactly that using WRITE_TOOLS — which does not
+# contain `bash`. Bash is the most side-effecting tool on any host; it would have sailed
+# through the courtesy band while `edit` was refused, and nothing would have said so.
+#
+# Inverted, an unclassified tool is refused. A new tool nobody has thought about is treated
+# as capable of anything, which is the only safe default for a name you have never seen.
+#
+# Substring match, because hosts prefix and namespace freely (mcp__x__read_file, Grep,
+# str_replace_editor). Kept deliberately short: these are the calls an agent uses to work
+# out WHAT to spell, and nothing here can change a file, run a command or send anything.
+READ_ONLY = (
+    'read', 'grep', 'glob', 'ls', 'list_', 'get_', 'search', 'find',
+    'webfetch', 'websearch', 'fetch',
+)
 RELAXED_BLOCK_AFTER = 12
 RELAXED_MIN_COVERAGE = 0.08
-DEFAULT_PROBE_SHARE = 15                      # percent of sessions, 0 disables
+# 15 -> 50, 2026-08-05. The probe samples once per SESSION, and at roughly a session a
+# day a 15% split had recorded ONE arm in two days — the 8-15 step band it exists to
+# populate still holds 0.3% of all gaps. At that rate the BLOCK_AFTER question needs
+# months, which is not an experiment, it is a way of never deciding.
+#
+# The pre-2026-08-05 rows do not carry over regardless: the gate they measured refused
+# every call at the threshold, and this one refuses only the acting ones until twice it.
+# A restart costs nothing because there was nothing to lose.
+DEFAULT_PROBE_SHARE = 50                      # percent of sessions, 0 disables
 
 
 def probe_share():
@@ -165,6 +228,53 @@ def probe_arm(session_id):
     h = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()[:8]
     return 'relaxed' if int(h, 16) % 100 < share else 'control'
 
+# ── the GAP probe: the same question, asked 28 times faster ─────────────────────
+#
+# probe_arm above is stable per SESSION, deliberately — a persistent treatment ("does
+# working under a tight gate change how you work?") is destroyed by flipping mid-task.
+#
+# But that is not the question BLOCK_AFTER answers. BLOCK_AFTER is set by a MOMENTARY
+# question: does a longer gap since the last check raise drift risk on the next reading?
+# The outcome is measured on that gap alone, so randomising per gap is not merely allowed,
+# it is the correct design — and it yields one datum per gap instead of one per session.
+#
+# The arithmetic is why this exists. At 2.5 sessions a day, the session probe had recorded
+# ONE arm in three days. The same corpus holds ~28 gaps per session, so this collects in
+# days what that collects in a quarter.
+#
+# AND THE CURRENT ANSWER IS "NO EVIDENCE", which is the actual finding. Measured
+# 2026-08-05 on 1,878 pairs:
+#
+#     1 step        2/27     7.4%
+#     2-3 steps    19/256    7.4%
+#     4-7 steps   160/1590  10.1%     z = 1.325 against 2-3 — not significant
+#     8-15 steps    0/5      unpowered
+#     16+ steps     0/0      nothing
+#
+# Drift risk does not measurably rise with steps across the range where data exists, and
+# the range is that narrow BECAUSE the gate closes at 4. The threshold costs 22.3% of an
+# agent's calls and rests on z = 1.325. The censoring is self-inflicted, and this is the
+# instrument that lifts it.
+#
+# BOUNDED ON PURPOSE. Draws come from a small set topping out at the relaxed arm's 12 —
+# a value already judged acceptable and already running for half of all sessions. This
+# widens the sample, it does not remove the floor.
+GAP_DRAWS = (4, 6, 8, 12)
+
+
+def gap_probe(session_id, gap_index):
+    """The gap this particular lapse is allowed, drawn deterministically.
+
+    Deterministic on (session, gap_index) for the same reason probe_arm is deterministic:
+    the hook re-runs on every tool call, so a random draw would change the threshold under
+    an agent mid-gap and record a number that was never actually applied.
+    """
+    if not probe_share() or not session_id:
+        return None
+    h = hashlib.sha256(f'{session_id}:{gap_index}'.encode('utf-8')).hexdigest()[:8]
+    return GAP_DRAWS[int(h, 16) % len(GAP_DRAWS)]
+
+
 # ── the coverage floor, in ONE place ────────────────────────────────────────────
 # The paragraph above records a real decision: 50% coverage means a check between every
 # tool call, and that tax gets abandoned, so daily use gates at a cadence that lands
@@ -199,7 +309,7 @@ def min_coverage():
 # summarises and the paper renders its figures from. Default is unchanged, so nothing that
 # does not set the variable behaves differently.
 STATE_DIR = pathlib.Path(os.environ.get('LASERBRAIN_STATE_DIR')
-                         or pathlib.Path.home() / '.claude' / 'laserbrain')
+                         or _paths.sessions_dir())
 # Shared corpus lives under ~/.claude/laserbrain for historical reasons. The path names
 # one host and holds every agent's rows; moving it would orphan the existing corpus, so
 # it stays and this comment is the correction.
@@ -364,6 +474,67 @@ def steps_since_check(sess):
     return int(sess.get('steps', 0) or 0) - last
 
 
+def record_refusal(sid, stage, tool, since, cov, floor, block_after, arm):
+    """Append one line for every time the gate warns or refuses. Never raises.
+
+    THE GATE FIRED AND LEFT NOTHING. It logged its arms, and — since this morning — its
+    errors, and recorded not one word about the thing it exists to do. Nobody could say how
+    often it closes, at which stage, or on what.
+
+    That gap is load-bearing in three places:
+
+      the published cost   /laserbrain says running laserbrain is 22.2% of an agent's
+                           calls. That counts the checks an agent MADE. It cannot count
+                           the calls this gate destroyed, each one a round trip plus a
+                           lost draft — so the published figure is a floor, and the
+                           distance above it is exactly what this log measures.
+      the middle band      2026-08-05 introduced a proportional stage on the argument that
+                           refusing reads was pure cost. Whether that helps is unmeasured,
+                           and the agent that wrote it works mostly through Bash, which
+                           the allowlist treats as acting — so it may help almost nobody.
+      the gap probe        it sweeps thresholds and records which arm was drawn, but not
+                           what the draw COST. Without that the sweep answers "does a
+                           longer gap drift more" and never "was it worth it".
+
+    NO COMMAND TEXT. The tool name, the stage and the numbers that produced the decision
+    are enough for every question above, and a log of what an agent was about to run is a
+    privacy surface with no analytic payoff.
+
+    Append-only, single writer, like arms.jsonl and for the identical reason: the session
+    file is contested by laserbrain.runtime's Session, which holds its dict in memory and
+    saves the whole thing back, so anything written there loses the race.
+    """
+    try:
+        log = STATE_DIR / 'refusals.jsonl'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, 'a') as fh:
+            fh.write(json.dumps({
+                'at': __import__('datetime').datetime.now().isoformat(timespec='seconds'),
+                'session': sid, 'stage': stage, 'tool': tool, 'arm': arm,
+                'since': since, 'coverage': round(cov, 3),
+                'floor': floor, 'block_after': block_after,
+            }) + '\n')
+    except Exception:
+        pass                       # a broken recorder must never cost a tool call
+
+
+def warn(reason):
+    """Let the call through, but say what nearly stopped it.
+
+    The counterpart to deny(), and the middle of the proportional response. It writes to
+    STDERR ONLY and exits 0: the hook contract treats a non-zero exit as a refusal, so a
+    warning that used deny()'s JSON shape would silently become a block and the whole
+    point of the middle band would be lost.
+
+    Exists so escalation is never a surprise. An agent that reads its way past the
+    threshold is told, on each read, that writes are already being refused and where the
+    hard stop is — which is the information it needs to decide whether to check now or
+    finish orienting first. Bang-bang gave it no such warning: the first signal WAS the
+    refusal.
+    """
+    sys.stderr.write(reason + '\n')
+
+
 def deny(reason):
     """Emit a block in both shapes and exit. Shared by the coverage and claim gates."""
     print(json.dumps({'hookSpecificOutput': {
@@ -496,7 +667,7 @@ def main():
     #
     #   touch ~/.config/laserbrain/gate-off     disable
     #   rm    ~/.config/laserbrain/gate-off     re-enable
-    if (pathlib.Path.home() / '.config' / 'laserbrain' / 'gate-off').exists():
+    if _paths.config('gate-off').exists():
         return
     raw = sys.stdin.read()
     try:
@@ -542,8 +713,18 @@ def main():
     block_after = BLOCK_AFTER
     floor = min_coverage()
     if arm == 'relaxed' and 'LASERBRAIN_MIN_COVERAGE' not in os.environ:
-        block_after = RELAXED_BLOCK_AFTER
         floor = RELAXED_MIN_COVERAGE
+        # THE SESSION ARM DECIDES WHETHER TO SWEEP; THE GAP PROBE DECIDES HOW FAR.
+        #
+        # Control keeps a fixed 4 so there is a clean baseline to compare against. The
+        # relaxed half draws its allowance per gap from {4, 6, 8, 12}, which is what
+        # populates the 8-15 band the fixed threshold has been censoring to n=5 — and n=5
+        # is the whole reason the agent clock reads z=1.325 instead of an answer.
+        #
+        # Falls back to the flat relaxed value if the probe is off, so turning the probe
+        # off leaves exactly the behaviour that was there before it existed.
+        drawn = gap_probe(sid, len(sess.get('checks') or []))
+        block_after = drawn if drawn is not None else RELAXED_BLOCK_AFTER
 
     # Two ways to be gated, and they answer different questions.
     #
@@ -560,19 +741,76 @@ def main():
     thin = steps >= 8 and cov < floor          # ignore the first few steps, where one
     if not (late or thin):                     # check swings coverage wildly
         return
+
+    # ── PROPORTIONAL RESPONSE ───────────────────────────────────────────────────────
+    #
+    # The old gate was bang-bang: nothing at all until the threshold, then refuse
+    # EVERYTHING. That is the crudest controller there is, and the cost fell on exactly
+    # the wrong calls — most refusals in practice land on a Read or a grep, work that
+    # changes nothing and was only ever going to inform the next check.
+    #
+    # The actuator here is binary — a call runs or it does not — so proportionality
+    # cannot live in the strength of one refusal. It lives in WHICH calls are refused as
+    # the error grows:
+    #
+    #     error                 refused              rationale
+    #     ----------------      -----------------    ------------------------------------
+    #     below threshold       nothing              silent; the nudge already ran
+    #     just past it          side-effecting only  look all you like; do not ACT on a
+    #                                                position you have not spelled
+    #     far past it           everything           the old behaviour, kept for the case
+    #                                                it was actually built for
+    #
+    # The middle band is the whole point. An agent that has drifted can still read, grep
+    # and orient — which is how it works out what to spell — but cannot write, edit or
+    # execute against a goal it has not stated. The instrument's own claim is about the
+    # relationship between a spelled goal and an ACTION; refusing a read was never that.
+    #
+    # HARD_MULTIPLE, not a second constant. The escalation point is a proportion of the
+    # threshold, so the relaxed arm escalates later in the same ratio and the probe keeps
+    # comparing like with like — one number to reason about instead of two that can
+    # silently disagree.
+    hard_after = block_after * HARD_MULTIPLE
+    over = since - block_after
+    # A coverage shortfall this deep is not a lapse, it is a run that never checks. Skip
+    # the courtesy band for it: the middle stage exists to let an agent finish orienting,
+    # and there is nothing to finish here.
+    starved = cov < floor / 2 and steps >= 8
+    hard = since >= hard_after or starved
+
+    tool = (_tool_of(ev) or '').lower()
+    # Allowlisted, not blocklisted — see READ_ONLY. `notebookedit` contains 'edit' and not
+    # a read word, so it lands on the refused side without needing its own rule; that is
+    # the allowlist working rather than a coincidence.
+    reading = any(r in tool for r in READ_ONLY) and not any(w in tool for w in WRITE_TOOLS)
+
+    if not hard and reading:
+        # Proportional zone, reading call: allow it, and say why it was nearly refused so
+        # the escalation is never a surprise.
+        record_refusal(sid, 'warn', tool, since, cov, floor, block_after, arm)
+        warn(f'laserbrain gate: {since} steps since your last check_state '
+             f'(coverage {cov:.0%}, floor {floor:.0%}). Reads still pass. '
+             f'Writes and commands are refused until you check, and at '
+             f'{hard_after} steps everything is.')
+        return
+
     why = (f'{since} steps since your last check_state' if late
            else f'coverage {cov:.0%} is below the {floor:.0%} floor this run is held to')
+    scope = ('every call' if hard
+             else 'calls that change something — reads are still passing')
     reason = (
         f'laserbrain gate: {why} '
         f'(coverage {cov:.0%} over {steps} steps, floor {floor:.0%}).\n'
-        f'Blocked because nudging did not work — coverage was 10% one day and 6% the '
-        f'next while this same reminder printed every 8 steps.\n'
+        f'Refusing {scope}. Nudging alone did not work — coverage was 10% one day and '
+        f'6% the next while a reminder printed every 8 steps.\n'
         f'THIS CALL DID NOT RUN. Nothing was written, executed or sent — you must '
         f'reissue it after checking. (A draft composed inside a blocked call is gone: '
         f'on 2026-07-25 a 100-line heredoc was denied here and the file simply did not '
         f'exist, which only surfaced when the next command failed.)\n'
         f'{check_howto(me)}'
     )
+    record_refusal(sid, 'hard' if hard else 'acting', tool, since, cov, floor,
+                   block_after, arm)
     deny(reason)
 
 
@@ -581,6 +819,34 @@ if __name__ == '__main__':
         main()
     except SystemExit:
         raise
-    except Exception:
-        pass                                     # fail OPEN, always
+    except Exception as e:
+        # FAIL OPEN, ALWAYS — but never silently, which is a different promise.
+        #
+        # The policy is right: a broken gate must not stop an agent working. The silence
+        # was not. On 2026-08-05 a one-character slip in this file — `s` where `sess` was
+        # meant — raised NameError on every relaxed-arm call, and this handler swallowed
+        # it. The gate was OFF for half of all sessions and the only symptom was that it
+        # never fired, which is indistinguishable from the relaxed arm behaving exactly as
+        # designed. It was found by a test that asked where the threshold was, not by
+        # anything noticing the instrument had stopped.
+        #
+        # So the exception is now recorded and printed. stderr, not a deny payload: a
+        # non-zero exit would turn a crash into a block, which is precisely the failure
+        # direction this handler exists to prevent.
+        try:
+            import traceback
+            log = STATE_DIR / 'gate-errors.jsonl'
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, 'a') as fh:
+                fh.write(json.dumps({
+                    'at': __import__('datetime').datetime.now().isoformat(timespec='seconds'),
+                    'error': f'{type(e).__name__}: {e}',
+                    'where': traceback.format_exc().strip().splitlines()[-2][:200],
+                }) + '\n')
+            sys.stderr.write(
+                f'laserbrain gate: FAILED OPEN — {type(e).__name__}: {e}\n'
+                f'The gate did not run for this call. It is not protecting anything until '
+                f'this is fixed; see {log}.\n')
+        except Exception:
+            pass                                 # a broken reporter must not break the hook
     sys.exit(0)
