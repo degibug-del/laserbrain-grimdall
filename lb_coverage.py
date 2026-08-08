@@ -575,6 +575,28 @@ def main():
     # it had answered the question — see _mark_user_turn_if_queued for the measurement.)
     _mark_user_turn_if_queued(ev)
 
+    # PUBLISH THE BLIND ARM, above every branch, because the MCP server cannot work it out.
+    #
+    # lasermind/mcp-server.mjs builds the check_state response and holds only `runId`, which
+    # resets on every reset_task — a session that resets twenty times would flip between arms
+    # twenty times and destroy the comparison. The MCP config's env block is static strings,
+    # so it cannot carry a session id either. This hook is the only process that knows one.
+    #
+    # It writes the ARM, not the id: handing the server an id would make it recompute the
+    # assignment in JavaScript from a second copy of the hash, which is the divergence bug
+    # already fixed three times in this codebase. The assignment lives in lb_gate, once.
+    #
+    # One writer here, one reader there — a different shape from the failure record_arm
+    # exists to avoid, which was two processes read-modify-writing the same dict.
+    #
+    # No-ops entirely unless LASERBRAIN_BLIND_PROBE is set.
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from lb_gate import publish_blind_arm
+        publish_blind_arm(_sid(ev), str(STATE_DIR))
+    except Exception:
+        pass          # an experiment must never break the harness it is measuring
+
     # Prefer the shared implementation when the installed package provides it.
     try:
         from laserbrain.runtime import from_hook, Session, session_id_of

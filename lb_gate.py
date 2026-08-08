@@ -214,6 +214,65 @@ def record_arm(session_id, arm, state_dir):
         pass          # never let bookkeeping break the gate
 
 
+def publish_blind_arm(session_id, state_dir):
+    """Write the CURRENT session's blind arm where the MCP server can read it.
+
+    THE PROBLEM THIS SOLVES. The blind arm has to be applied where the check_state response
+    is built — lasermind/mcp-server.mjs — and that process has no session id. It holds only
+    `runId`, which resets on every reset_task; a session that resets twenty times would flip
+    between blind and sighted twenty times, destroying exactly the comparison the arm exists
+    to make. The MCP config's env block is static strings, so it cannot carry one either.
+
+    The hook is the only process that knows the session id, and it already imports this
+    module. So it writes the answer and the server reads it.
+
+    ONE WRITER, ONE READER — which is a different shape from the bug record_arm exists to
+    avoid. That failure was two processes doing read-modify-write on the same dict, each
+    dropping the other's keys. Here nothing but this function ever writes, and the server
+    only reads, so there is nothing to clobber.
+
+    IT WRITES THE ARM, NOT THE SESSION ID, deliberately. Handing the server an id would make
+    it compute the assignment itself, in JavaScript, from a second copy of this hash — the
+    divergence problem fixed three separate times in this codebase already. The assignment
+    lives here, once, and the server is told the answer.
+
+    Atomic via rename: a torn read would be a session in neither arm.
+    """
+    try:
+        arm = blind_arm(session_id)
+        d = pathlib.Path(state_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        cur = d / 'current-arm.json'
+        # Skip the write when nothing changed — this runs on every tool call.
+        if cur.exists():
+            try:
+                prev = json.loads(cur.read_text())
+                if prev.get('session') == session_id and prev.get('blind') == arm:
+                    return arm
+            except Exception:
+                pass
+        import datetime as _dt
+        tmp = d / f'.current-arm.{os.getpid()}.tmp'
+        tmp.write_text(json.dumps({'session': session_id, 'blind': arm,
+                                   'at': _dt.datetime.now().isoformat(timespec='seconds')}))
+        tmp.replace(cur)
+        return arm
+    except Exception as e:
+        # NEVER let bookkeeping change what the agent sees — but do not swallow the reason.
+        #
+        # The first version of this caught bare Exception and returned 'sighted'. datetime
+        # was not imported in this module, so every call failed, no file was written, and it
+        # reported the default as though it had decided. That is the same silent-failure
+        # shape as `2>/dev/null` hiding the SIGPIPE in upload-build.sh and `set -e` killing a
+        # read with no message — written by me an hour after documenting both.
+        #
+        # LASERBRAIN_DEBUG surfaces it. The fallback still holds, because an experiment that
+        # breaks a working harness is worse than no experiment.
+        if os.environ.get('LASERBRAIN_DEBUG'):
+            sys.stderr.write(f'publish_blind_arm failed: {type(e).__name__}: {e}\n')
+        return 'sighted'
+
+
 def probe_arm(session_id):
     """'relaxed' or 'control', stable for the life of a session id.
 
