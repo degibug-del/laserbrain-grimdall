@@ -593,7 +593,17 @@ def main():
     try:
         sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
         from lb_gate import publish_blind_arm
-        publish_blind_arm(_sid(ev), str(STATE_DIR))
+        # The segment index is how many runs have already been archived. It advances exactly
+        # when reset_task fires — never mid-task — so the arm is stable for the life of one
+        # task and re-drawn for the next.
+        _sd = _sid(ev)
+        _seg = 0
+        try:
+            _st = json.loads((STATE_DIR / f'{_sd}.json').read_text())
+            _seg = len(_st.get('segments') or [])
+        except Exception:
+            pass
+        publish_blind_arm(_sd, str(STATE_DIR), segment=_seg)
     except Exception:
         pass          # an experiment must never break the harness it is measuring
 

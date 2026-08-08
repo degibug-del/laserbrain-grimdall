@@ -214,7 +214,7 @@ def record_arm(session_id, arm, state_dir):
         pass          # never let bookkeeping break the gate
 
 
-def publish_blind_arm(session_id, state_dir):
+def publish_blind_arm(session_id, state_dir, segment=None):
     """Write the CURRENT session's blind arm where the MCP server can read it.
 
     THE PROBLEM THIS SOLVES. The blind arm has to be applied where the check_state response
@@ -239,7 +239,11 @@ def publish_blind_arm(session_id, state_dir):
     Atomic via rename: a torn read would be a session in neither arm.
     """
     try:
-        arm = blind_arm(session_id)
+        # The UNIT is a segment, not a session — see blind_arm. The segment index comes from
+        # how many runs have already been archived, so it advances exactly when reset_task
+        # fires and never mid-task.
+        unit = f'{session_id}#{segment}' if segment is not None else str(session_id)
+        arm = blind_arm(unit)
         d = pathlib.Path(state_dir)
         d.mkdir(parents=True, exist_ok=True)
         cur = d / 'current-arm.json'
@@ -247,13 +251,13 @@ def publish_blind_arm(session_id, state_dir):
         if cur.exists():
             try:
                 prev = json.loads(cur.read_text())
-                if prev.get('session') == session_id and prev.get('blind') == arm:
+                if prev.get('unit') == unit and prev.get('blind') == arm:
                     return arm
             except Exception:
                 pass
         import datetime as _dt
         tmp = d / f'.current-arm.{os.getpid()}.tmp'
-        tmp.write_text(json.dumps({'session': session_id, 'blind': arm,
+        tmp.write_text(json.dumps({'session': session_id, 'unit': unit, 'segment': segment, 'blind': arm,
                                    'at': _dt.datetime.now().isoformat(timespec='seconds')}))
         tmp.replace(cur)
         return arm
@@ -287,8 +291,28 @@ def probe_arm(session_id):
     h = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()[:8]
     return 'relaxed' if int(h, 16) % 100 < share else 'control'
 
-def blind_arm(session_id):
+def blind_arm(unit_id):
     """'sighted' or 'blind' — does SEEING the verdict change the work? Off unless enabled.
+
+    RE-CUT 2026-08-08 TO KEY ON A SEGMENT, NOT A SESSION. The first version randomised per
+    session and was unrunnable: Diego works in ONE session, and the corpus proves it — a
+    single session holds 2,436 of 2,483 checks, 98% of everything. Randomising per session
+    gives n=1, and the pre-registration asked for 20 per arm. It could never have completed.
+
+    A SEGMENT is the right unit and the codebase already argued for it. The GAP probe below
+    says: "randomising per gap is not merely allowed, it is the correct design — and it
+    yields one datum per gap instead of one per session." The same holds here. `reset_task`
+    means a new task with a new frozen ground, so a segment is exactly one task, and one arm
+    per task is the treatment this measures — not a flip mid-task, which is what the session
+    version was written to avoid.
+
+      unit       n available in the corpus
+      session    12   (one holds 98%)
+      segment    254
+
+    So `unit_id` is a RUN id, not a session id — the thing the MCP server already holds and
+    that resets on every reset_task. I rejected runId as a session key for exactly the
+    property that makes it right here.
 
     A SECOND, INDEPENDENT ARM. probe_arm above asks whether a tighter gate changes how you
     work. This asks something else: the checks happen either way, Phi is computed and
@@ -317,9 +341,9 @@ def blind_arm(session_id):
     import os
     if os.environ.get('LASERBRAIN_BLIND_PROBE', '').strip() not in ('1', 'true', 'yes'):
         return 'sighted'
-    if not session_id:
+    if not unit_id:
         return 'sighted'
-    h = hashlib.sha256(('blind:' + str(session_id)).encode('utf-8')).hexdigest()[:8]
+    h = hashlib.sha256(('blind:' + str(unit_id)).encode('utf-8')).hexdigest()[:8]
     return 'blind' if int(h, 16) % 2 == 0 else 'sighted'
 
 
