@@ -228,6 +228,42 @@ def probe_arm(session_id):
     h = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()[:8]
     return 'relaxed' if int(h, 16) % 100 < share else 'control'
 
+def blind_arm(session_id):
+    """'sighted' or 'blind' — does SEEING the verdict change the work? Off unless enabled.
+
+    A SECOND, INDEPENDENT ARM. probe_arm above asks whether a tighter gate changes how you
+    work. This asks something else: the checks happen either way, Phi is computed and
+    recorded either way, and the only difference is whether the agent is TOLD.
+
+    That distinction is the whole point. Every session in the corpus to date ran with the
+    harness visible, so there is no arm in which the instrument was measuring without also
+    intervening — and "does it help?" has therefore never been answerable, only asserted.
+    Diego's own read on 2026-08-07 was "yes, noticeably better", which is exactly the kind
+    of belief that needs a control rather than a testimonial.
+
+    WHY NOT SIMPLY TURN THE HARNESS OFF for the control arm: then the control sessions
+    record less Phi than the treatment sessions, and the two arms are no longer comparable —
+    you would be contrasting a measured population against a partly unmeasured one, which
+    manufactures a difference out of the measurement itself. Blinding keeps the data
+    identical in both arms and removes only the feedback.
+
+    DIFFERENT SALT, so this is orthogonal to probe_arm. Hashing the same session id twice
+    the same way would put every session in matching arms and silently fuse two experiments
+    into one; with the salt they cross, and the design is factorial and analysable as such.
+
+    DEFAULT OFF. Returns 'sighted' unless LASERBRAIN_BLIND_PROBE is set, because switching
+    it on changes what a live agent can see about itself. Enabling it is a decision someone
+    makes on purpose, not a thing that starts happening because a file was updated.
+    """
+    import os
+    if os.environ.get('LASERBRAIN_BLIND_PROBE', '').strip() not in ('1', 'true', 'yes'):
+        return 'sighted'
+    if not session_id:
+        return 'sighted'
+    h = hashlib.sha256(('blind:' + str(session_id)).encode('utf-8')).hexdigest()[:8]
+    return 'blind' if int(h, 16) % 2 == 0 else 'sighted'
+
+
 # ── the GAP probe: the same question, asked 28 times faster ─────────────────────
 #
 # probe_arm above is stable per SESSION, deliberately — a persistent treatment ("does
