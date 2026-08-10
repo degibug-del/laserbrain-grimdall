@@ -6,7 +6,7 @@ State lived at two hardcoded roots with no way to move either:
 
     ~/.config/laserbrain    user-turn, evidence.json, contexts.json, drift-log.jsonl,
                             verdict-outcomes.jsonl, the link log, the key, gate-off
-    ~/.claude/laserbrain    session files, arms.jsonl, gate-errors.jsonl, refusals.jsonl
+    ~/.claude/laserbrain    session files, probe-arms.jsonl, blind-arms.jsonl, gate-errors.jsonl, refusals.jsonl
 
 Eleven files referenced them directly; two honoured an environment override. The cost
 showed up as `test_parent_overlap` failing intermittently for two days: one suite wrote

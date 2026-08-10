@@ -355,7 +355,7 @@ def load(path):
     # in memory across this hook's writes, and saves the whole thing back — so the last
     # writer drops the other's keys. Checked 2026-08-03: not one session file carried the
     # arm, including the live one, so the probe was applying arms and recording none.
-    # lb_gate.record_arm appends it to arms.jsonl instead, where there is one writer.
+    # lb_gate.record_arm appends it to probe-arms.jsonl instead, where there is one writer.
     return d
 
 

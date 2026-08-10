@@ -180,7 +180,7 @@ def probe_share():
 
 
 def record_arm(session_id, arm, state_dir):
-    """Append this session's arm to arms.jsonl, once. Never rewrites anything.
+    """Append this session's arm to probe-arms.jsonl, once. Never rewrites anything.
 
     WHY NOT IN THE SESSION FILE, which is where it lived for a day and lost every write
 
@@ -198,7 +198,7 @@ def record_arm(session_id, arm, state_dir):
     Recorded once per session — the first gated call — because the arm cannot change.
     """
     try:
-        log = pathlib.Path(state_dir) / 'arms.jsonl'
+        log = pathlib.Path(state_dir) / 'probe-arms.jsonl'
         if log.exists():
             with open(log) as fh:
                 for line in fh:
@@ -672,7 +672,7 @@ def record_refusal(sid, stage, tool, since, cov, floor, block_after, arm):
     are enough for every question above, and a log of what an agent was about to run is a
     privacy surface with no analytic payoff.
 
-    Append-only, single writer, like arms.jsonl and for the identical reason: the session
+    Append-only, single writer, like probe-arms.jsonl and for the identical reason: the session
     file is contested by laserbrain.runtime's Session, which holds its dict in memory and
     saves the whole thing back, so anything written there loses the race.
     """
@@ -979,6 +979,16 @@ def main():
         f'reissue it after checking. (A draft composed inside a blocked call is gone: '
         f'on 2026-07-25 a 100-line heredoc was denied here and the file simply did not '
         f'exist, which only surfaced when the next command failed.)\n'
+        # THE BATCH CASE, WHICH THE MESSAGE USED TO LEAVE OUT. This fires per call, so a
+        # block of parallel calls gets one refusal EACH while the earlier ones in the same
+        # block already ran. On 2026-08-10 an agent sent 28 task updates, 7 applied and 21
+        # were refused, and it then reissued in shrinking waves — repeating ids it had
+        # already completed, because "this call did not run" says nothing about its
+        # siblings. It cannot: the gate sees one call. So it says that instead of implying
+        # otherwise.
+        f'IF YOU SENT SEVERAL CALLS AT ONCE, some of them ran and this one did not. This '
+        f'gate sees one call and cannot tell you which. Re-read the state before reissuing '
+        f'— do not replay the whole block.\n'
         f'{check_howto(me)}'
     )
     record_refusal(sid, 'hard' if hard else 'acting', tool, since, cov, floor,
