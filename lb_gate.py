@@ -341,6 +341,11 @@ def blind_arm(unit_id):
     that resets on every reset_task. I rejected runId as a session key for exactly the
     property that makes it right here.
 
+    PRE-REGISTERED IN BLIND-PROBE.md, alongside this file, on 2026-08-10 — sample size,
+    outcome measure, stopping rule, and what result would mean the harness does not help,
+    all written before any of it was read. If a number here and a number there disagree,
+    that document is the record of what was decided while the answer was unknown.
+
     A SECOND, INDEPENDENT ARM. probe_arm above asks whether a tighter gate changes how you
     work. This asks something else: the checks happen either way, Phi is computed and
     recorded either way, and the only difference is whether the agent is TOLD.
