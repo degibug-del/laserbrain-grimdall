@@ -256,10 +256,37 @@ def publish_blind_arm(session_id, state_dir, segment=None):
             except Exception:
                 pass
         import datetime as _dt
+        rec = {'session': session_id, 'unit': unit, 'segment': segment, 'blind': arm,
+               'at': _dt.datetime.now().isoformat(timespec='seconds')}
         tmp = d / f'.current-arm.{os.getpid()}.tmp'
-        tmp.write_text(json.dumps({'session': session_id, 'unit': unit, 'segment': segment, 'blind': arm,
-                                   'at': _dt.datetime.now().isoformat(timespec='seconds')}))
+        tmp.write_text(json.dumps(rec))
         tmp.replace(cur)
+
+        # ── AND KEEP IT, BECAUSE current-arm.json IS CURRENT ──────────────────────────────
+        #
+        # THE EXPERIMENT COULD NOT PRODUCE ITS OWN RESULT. current-arm.json is overwritten on
+        # every new unit, session records carry no arm, and their check entries hold only
+        # step/drifting/goal/progress/distance. So from 2026-08-08 the blind probe ran,
+        # visibly — every session could see `blind: true` — while nothing durable recorded
+        # which unit got which arm. Two arms, no way to tell them apart afterwards. Found on
+        # 2026-08-10 while trying to pre-register a stopping rule, which is the good news:
+        # the design fault surfaced before anyone read a number off it.
+        #
+        # The assignment is deterministic in `unit`, so history is in principle recomputable
+        # — but only for units someone can still enumerate, and nothing enumerates them. An
+        # append here is the cheap durable record: one line per new unit, never rewritten.
+        #
+        # ITS OWN try/except, AND THAT IS THE POINT. The enclosing handler returns 'sighted'
+        # on any exception. A bookkeeping failure reaching it would silently move sessions
+        # into one arm — bookkeeping deciding the experiment it exists to record. It cannot
+        # reach it from in here.
+        try:
+            with (d / 'blind-arms.jsonl').open('a') as fh:
+                fh.write(json.dumps(rec) + '\n')
+        except Exception as _e:
+            if os.environ.get('LASERBRAIN_DEBUG'):
+                sys.stderr.write(f'blind-arms append failed: {type(_e).__name__}: {_e}\n')
+
         return arm
     except Exception as e:
         # NEVER let bookkeeping change what the agent sees — but do not swallow the reason.
