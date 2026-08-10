@@ -480,7 +480,14 @@ def _verdict(resp):
             'run_step': found.get('step'),
             'judgment': (j.get('verdict') if isinstance(j, dict) else None),
             'anchored': found.get('anchored'),
-            'goal_score': found.get('goal_score')}
+            'goal_score': found.get('goal_score'),
+            # WHICH ARM THIS CHECK BELONGED TO. The server states it on both branches; a
+            # blind response also carries `blind: true`, which is the fallback for a server
+            # too old to say `arm`. None means "not stated", and that is NOT 'sighted' — a
+            # check recorded before 2026-08-10 has no arm, and folding it into sighted
+            # would enrol the entire pre-blind corpus in one arm of an experiment it was
+            # never part of.
+            'arm': found.get('arm') or ('blind' if found.get('blind') is True else None)}
 
 
 def _attribute(s, step):
@@ -823,6 +830,12 @@ def main():
                                 # counters that were never reconcilable now share a key.
                                 'run': v['run'],
                                 'run_step': v['run_step'],
+                                # THE JOIN THAT WAS MISSING. `run` names the server's row by
+                                # UUID; the blind arm names its unit by segment index.
+                                # Neither reaches the other, so the arm is recorded here
+                                # directly and the analysis needs no mapping at all.
+                                # Absent rather than null when unstated — see _verdict.
+                                **({'arm': v['arm']} if v.get('arm') else {}),
                                 # Written only when present, so a row from an older server
                                 # is absent rather than carrying a null that reads like a
                                 # measured "no judgment".

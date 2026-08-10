@@ -301,6 +301,27 @@ def publish_blind_arm(session_id, state_dir, segment=None):
         # breaks a working harness is worse than no experiment.
         if os.environ.get('LASERBRAIN_DEBUG'):
             sys.stderr.write(f'publish_blind_arm failed: {type(e).__name__}: {e}\n')
+        # AND LEAVE A MARK, BECAUSE THIS FALLBACK IS NOT NEUTRAL.
+        #
+        # Returning 'sighted' keeps a working harness working, which is right. But it also
+        # moves a unit into one arm, so a run of failures quietly turns a two-armed
+        # experiment into a one-armed one — and until now that was visible only to whoever
+        # happened to have LASERBRAIN_DEBUG set, which is nobody.
+        #
+        # One marked line, so the analysis can exclude these or report how many there were.
+        # An experiment whose failure mode is "silently becomes single-arm" cannot be
+        # trusted when it agrees with you either.
+        try:
+            import datetime as _dt2
+            d2 = pathlib.Path(state_dir)
+            d2.mkdir(parents=True, exist_ok=True)
+            with (d2 / 'blind-arms.jsonl').open('a') as fh:
+                fh.write(json.dumps({'session': session_id, 'unit': None, 'segment': segment,
+                                     'blind': 'sighted', 'fallback': True,
+                                     'error': f'{type(e).__name__}: {e}'[:200],
+                                     'at': _dt2.datetime.now().isoformat(timespec='seconds')}) + '\n')
+        except Exception:
+            pass
         return 'sighted'
 
 
