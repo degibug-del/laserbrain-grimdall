@@ -406,7 +406,13 @@ def _verdict(resp):
         if depth > 6 or isinstance(x, bool):
             return None
         if isinstance(x, dict):
-            if isinstance(x.get('drifting'), bool):
+            # A READING IS NOT ONLY A `drifting` KEY. The blind arm answers
+            # {blind:true, arm, run, step, note} and carries no `drifting` at all — so a
+            # walk that recognised responses by that one field could not see a withheld
+            # verdict, fell through to the no-reading default, and every blind check was
+            # recorded as a parse failure. The experiment was erasing itself from the
+            # corpus it exists to be measured in. Recognise either.
+            if isinstance(x.get('drifting'), bool) or x.get('blind') is True:
                 return x
             for val in x.values():
                 got = walk(val, depth + 1)
@@ -818,12 +824,51 @@ def main():
             resp = _resp(ev)
             ti = args
             v = _verdict(resp)
+
+            # ── A CHECK IS A READING. NO READING, NO CHECK. ────────────────────────
+            #
+            # This appended a row whatever came back, including when the response was not
+            # observed at all — and then the row held only what the AGENT had typed:
+            # goal, progress, distance, step. No phi, no run id, nothing the instrument
+            # said. Those rows are indistinguishable from real readings in every count
+            # that matters, including the coverage percentage this gate enforces and any
+            # arm comparison the blind probe would make.
+            #
+            # Measured 2026-08-16: 41 of 56 live checks were exactly this shape, all with
+            # phi None and run None. 73% of the recent corpus was the agent talking to
+            # itself with no answer written down, and it looked like data.
+            #
+            # A blind reading is NOT this. Blind carries `arm` and a run id — the server
+            # answered and withheld the verdict on purpose, which is a fact worth keeping.
+            # Only an unobserved response is dropped, and it is kept as an event so the
+            # step is still counted and nothing silently disappears.
+            # `run`, `phi` and `arm` are RECENT fields. Testing only for them called every
+            # one of the 241 archived checks hollow — rows with real verdicts (advancing,
+            # grounded, goal-drift) written by an older hook that stored none of the three.
+            # A reading is evidenced by any of them OR by a reason that is not the
+            # no-reading default, which is what an old genuine row looks like. Caught by
+            # running the rule over the archive before shipping it.
+            _r = v.get('reason')
+            observed = ((v.get('run') is not None) or (v['phi'] is not None) or bool(v.get('arm'))
+                        or (bool(_r) and _r not in ('no-reading', 'unparsed')))
+            if not observed:
+                s.setdefault('events', []).append({
+                    'step': step, 'kind': 'check-unobserved',
+                    'goal': str(ti.get('goal', ''))[:200]})
+                path.write_text(json.dumps(s, indent=2))
+                return
+
+            # A withheld verdict is a reading of its own. Recording it as 'no-reading'
+            # made the experiment indistinguishable from a parse failure — the probe
+            # poisoning the corpus it exists to be measured in.
+            reason = 'blind' if (v.get('arm') == 'blind' and v['reason'] == 'no-reading') else v['reason']
+
             s['checks'].append({'step': step,
                                 'drifting': v['drifting'],
                                 'goal': str(ti.get('goal', ''))[:400],
                                 'progress': str(ti.get('progress', '')),
                                 'distance': ti.get('distance'),
-                                'reason': v['reason'],
+                                'reason': reason,
                                 'phi': v['phi'],
                                 # The join. `step` above counts tool calls in this session;
                                 # `run`/`run_step` name the row the server wrote. Two
