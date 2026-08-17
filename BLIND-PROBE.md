@@ -1,5 +1,34 @@
 # The blind probe — pre-registration
 
+> ## RESTARTED FROM ZERO, 2026-08-16
+>
+> **The first collection is void and was not looked at.** 21 assignments had accumulated,
+> 10 blind and 10 sighted, about half the pre-registered 20-per-arm. They are archived at
+> `~/.claude/laserbrain/blind-arms.faulty-window-2026-08-08_2026-08-16.jsonl` rather than
+> deleted, because they are now evidence about the fault rather than about the question.
+>
+> **Why.** For the whole of that window the MCP server had a defect that moved the frozen
+> ground: subagents share one server process and one `_state`, every agent is told to call
+> `reset_task` when it starts new work, and `reset_task` deleted whatever ground was live —
+> usually not the caller's. A parent's next check, passing a byte-identical goal string,
+> then read `goal-drift` at 0.02 and escalated to `wrong-problem`. Fixed the same day in
+> lasermind's `mcp-server.mjs` (shared lane suspends instead of discarding) and in
+> laserbrain 0.51.0 for the Python package.
+>
+> That is not a nuisance for this probe, it is fatal to it. The probe asks *does seeing the
+> verdict change the work* — and for those days some verdicts were false, produced by a
+> reference that had moved. The sighted arm was therefore reading a partly fictional
+> instrument, which is the one thing the comparison cannot survive. Whether it biased the
+> arms symmetrically is unknown and unmeasured, and "probably symmetric" is not a standard
+> this file is written to.
+>
+> **No interim look was taken before discarding**, and none should be taken of the archive
+> while the restarted probe runs: reading it would reintroduce exactly the knowledge the
+> pre-registration exists to keep out.
+>
+> Nothing below changed. Same question, same unit, same assignment rule, same stopping rule,
+> same failure conditions. The count starts again at zero on the fixed server.
+
 **Written 2026-08-10, before any result was read.** Every number below was chosen while the
 answer was unknown, which is the only condition under which choosing them is free. Values
 marked *proposed* are Diego's to change — but they must be changed **now**, not after a
