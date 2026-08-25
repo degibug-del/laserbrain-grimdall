@@ -1,6 +1,10 @@
 # laserbrain-grimdall
 
-laserbrain in one tree: the SDK, the corpus that calibrates it, and the gate that
+**laserbrain is a goal-alignment harness that asserts a user-directed context against an
+agent's self-directed intended context.** The context is frozen where the agent cannot
+revise it — it moves when you speak, and never when the agent decides it should.
+
+This repo is laserbrain in one tree: the SDK, the corpus that calibrates it, and the gate that
 enforces coverage. Each subtree keeps the full history of the repo it came from, so
 `git log` still reaches the reasoning behind any line.
 
