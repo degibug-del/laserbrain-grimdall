@@ -1,7 +1,7 @@
 # laserbrain-grimdall
 
 **laserbrain is a goal-alignment harness that asserts any user-directed context in order to
-interrupt agentic context-drift during a task.** The goal is frozen where the agent cannot revise it; a turn of yours
+interrupt agentic context misalignment during a task.** The goal is frozen where the agent cannot revise it; a turn of yours
 re-grounds it, and a declared parent goal licenses a sub-task — neither is drift.
 
 This repo is laserbrain in one tree: the SDK, the corpus that calibrates it, and the gate that
