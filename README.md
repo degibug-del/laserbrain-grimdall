@@ -1,7 +1,7 @@
 # laserbrain-grimdall
 
 **laserbrain is a goal-alignment harness that asserts an agent's grammatical goal as it is
-first stated, and stops the agent before the next tool call when that goal moves due to
+first stated, and stops the agent before the next tool call when the goal is changed due to
 agentic context-drift.** The goal is frozen where the agent cannot revise it; a turn of yours
 re-grounds it, and a declared parent goal licenses a sub-task — neither is drift.
 
