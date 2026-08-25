@@ -1,8 +1,8 @@
 # laserbrain-grimdall
 
-**laserbrain is a goal-alignment harness that asserts a user-directed context against an
-agent's self-directed intended context.** The context is frozen where the agent cannot
-revise it — it moves when you speak, and never when the agent decides it should.
+**laserbrain is a goal-alignment harness that asserts an agent's goal as it is first stated,
+and stops the agent before the next tool call when that goal moves without you.** The goal is
+frozen where the agent cannot revise it; only a turn of yours re-grounds it.
 
 This repo is laserbrain in one tree: the SDK, the corpus that calibrates it, and the gate that
 enforces coverage. Each subtree keeps the full history of the repo it came from, so
