@@ -11,8 +11,12 @@ enforces coverage. Each subtree keeps the full history of the repo it came from,
 | path         | from                     | what it is                                                   |
 |--------------|--------------------------|--------------------------------------------------------------|
 | `sdk/`       | `degibug-del/laserbrain` | the published package — python, javascript, typescript, json |
-| `lasermind/` | `degibug-del/lasermind`  | the corpus, the attention calibration, the local MCP server   |
-| `lasergear/` | `degibug-del/lasergear`  | the coverage gate and the hooks                               |
+| `lasermind/` | `degibug-del/laserbrain-corpus` | the corpus, the attention calibration, the local MCP server |
+| `lasergear/` | `degibug-del/laserbrain-instructions` | the coverage gate and the hooks                 |
+
+Those two were named `lasermind` and `lasergear` until 2026-08-30. The subtree directories
+keep the old names because renaming them would rewrite every path in this repository's
+history for a cosmetic gain; the **from** column is what to follow.
 
 `degibug-del/laserbrain-sdk` is deliberately **not** here. It was a second copy of the
 SDK that sat at 0.53.0 while the published one moved to 0.55.0, and fifteen build
