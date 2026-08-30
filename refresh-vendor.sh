@@ -46,7 +46,9 @@ refresh() {
   git add -A "$name"
 
   local disk tracked extra missing
-  disk=$(find "$name" -type f | sed "s|^$name/||" | sort)
+# `-type f -o -type l` because research/ symlinks six files to javascript/ so the
+# protocol exists once. `-type f` alone misses them and reports the vendor as short.
+  disk=$(find "$name" \( -type f -o -type l \) | sed "s|^$name/||" | sort)
   tracked=$(git -C "$src" ls-files | sort)
   extra=$(comm -23 <(printf '%s\n' "$disk") <(printf '%s\n' "$tracked") || true)
   missing=$(comm -13 <(printf '%s\n' "$disk") <(printf '%s\n' "$tracked") || true)
