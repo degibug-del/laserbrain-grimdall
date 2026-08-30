@@ -1,47 +1,55 @@
 # laserbrain-grimdall
 
-**laserbrain is a goal-alignment harness that asserts any user-directed context in order to
-interrupt agentic context misalignment during a task.** The goal is frozen where the agent cannot revise it; a turn of yours
-re-grounds it, and a declared parent goal licenses a sub-task — neither is drift.
+A project that runs on the laserbrain infrastructure, with that infrastructure vendored
+here so it can be read and worked against directly rather than only through a package
+manager.
 
-This repo is laserbrain in one tree: the SDK, the corpus that calibrates it, and the gate that
-enforces coverage. Each subtree keeps the full history of the repo it came from, so
-`git log` still reaches the reasoning behind any line.
+## The layout
 
-| path         | from                     | what it is                                                   |
-|--------------|--------------------------|--------------------------------------------------------------|
-| `sdk/`       | `degibug-del/laserbrain` | the published package — python, javascript, typescript, json |
-| `lasermind/` | `degibug-del/laserbrain-corpus` | the corpus, the attention calibration, the local MCP server |
-| `lasergear/` | `degibug-del/laserbrain-instructions` | the coverage gate and the hooks                 |
+Every directory here is a plain duplicate of one repository, named after it.
 
-Those two were named `lasermind` and `lasergear` until 2026-08-30. The subtree directories
-keep the old names because renaming them would rewrite every path in this repository's
-history for a cosmetic gain; the **from** column is what to follow.
+| directory | duplicate of |
+|---|---|
+| `laserbrain/` | [degibug-del/laserbrain](https://github.com/degibug-del/laserbrain) — the base repo: SDK, hooks, MCP server, the grammar, the plugin |
+| `laserbrain-corpus/` | [degibug-del/laserbrain-corpus](https://github.com/degibug-del/laserbrain-corpus) — the measurement corpus and the studies that read it |
 
-`degibug-del/laserbrain-sdk` is deliberately **not** here. It was a second copy of the
-SDK that sat at 0.53.0 while the published one moved to 0.55.0, and fifteen build
-scripts read the stale one for five days before anyone noticed. It was retired on
-2026-08-24. Bringing it in would rebuild the problem retiring it solved.
+That is the whole rule. A directory name tells you which repository it came from, and
+nothing here needs a table to decode.
+
+```bash
+./refresh-vendor.sh          # re-copy both from ~/laserbrain and ~/laserbrain-corpus
+```
+
+The script verifies each copy equals its upstream's tracked files exactly, because the same
+refresh done by hand elsewhere leaked build artifacts twice and silently dropped two files
+for nine days.
+
+## What changed on 2026-08-30
+
+This was three git subtrees named `sdk/`, `lasermind/` and `lasergear/`. Two problems.
+
+The names had stopped matching the repositories: `lasermind` and `lasergear` were renamed to
+`laserbrain-corpus` and `laserbrain-instructions`, so the directory names pointed at nothing
+and a provenance table was doing the work a name should do.
+
+And the content had converged. `lasergear`'s hooks live in `laserbrain` and ship inside the
+wheel, so the tree carried the same three hook modules twice under two names — and they
+diverged, one copy falling 146 lines behind with a live gate bug the whole time. `sdk/` was
+the laserbrain repo, which is now `laserbrain/`.
+
+The corpus is the one thing `laserbrain` deliberately does not carry, so it stays as its own
+duplicate. A repository that holds its own measurements can be tuned until they agree with
+it; keeping them apart is what makes the algorithms worth re-running.
 
 ## Where the truth lives
 
-- **grammar.json** is the single source. Five copies exist across the surfaces and a
-  build gate fails if any two disagree.
+- **grammar.json** is the single source. Copies exist across the surfaces and a build gate
+  fails if any two disagree.
 - **drift-vectors.json** is generated *from* the Python implementation, so Python is the
-  reference and the JS and TS implementations are checked against it — never the other
-  way round.
-- Anything under `lasermind/` described as a corpus is **one machine and one agent**.
-  `attention.json` records `dominant_agent_share: 1.0`, and its own provenance block
-  says it calibrates this setup and is not a constant of anything. Treat every number
-  derived from it as a fact about one operator until a second one contributes.
+  reference and the JS and TS implementations are checked against it, never the reverse.
+- Anything under `laserbrain-corpus/` described as a corpus is **one machine and one agent**.
 
-## Running the checks
-
-```
-cd sdk/python && for t in test_*.py; do python3 "$t"; done   # 44 suites
-node sdk/javascript/test/parity.mjs                          # JS against Python
-cd sdk/typescript && npx tsx test/parity.mjs                 # TS against Python
-```
-
-All three must agree on the vectors. If they disagree, the Python result is the one to
-trust and the other two are wrong.
+`degibug-del/laserbrain-sdk` is deliberately absent. It was a second copy of the SDK that sat
+at 0.53.0 while the published one moved on, and fifteen build scripts read the stale one for
+five days before anyone noticed. It was retired on 2026-08-24 and archived on 2026-08-30.
+Bringing it in would rebuild the problem retiring it solved.

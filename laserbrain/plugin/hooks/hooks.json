@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "WHY EACH COMMAND LOOKS LIKE THIS.",
+    "",
+    "1. THE INTERPRETER IS RESOLVED, AND LASERBRAIN_PYTHON WINS. Naming `python3` is wrong on",
+    "   Windows and anywhere the interpreter is `python`. Resolving it is still not enough:",
+    "   the case that actually happens is a `python3` that EXISTS and cannot import laserbrain,",
+    "   because the user installed into a venv or with pipx. LASERBRAIN_PYTHON lets them say",
+    "   which interpreter has it. Every mcp-server.mjs already reads that variable (line 689);",
+    "   the hooks were the one component that ignored it.",
+    "",
+    "2. IT SAYS SO WHEN IT CANNOT RUN. The previous form ended in `|| exit 0`, so a missing",
+    "   package produced no output at all: the plugin installed, the MCP tools worked because",
+    "   they are a hosted HTTP server needing no Python, and the hooks never ran. Nothing",
+    "   distinguished that from a quiet session. It now names the interpreter it tried, once,",
+    "   guarded by a marker keyed on that interpreter's path so a changed interpreter warns",
+    "   again and an unchanged one does not repeat on every tool call.",
+    "",
+    "3. IT STILL FAILS OPEN. Every branch reaches `exit 0`. A hook that denied because it could",
+    "   not load itself would brick every tool call in the session.",
+    "",
+    "4. DENIAL DOES NOT TRAVEL BY EXIT CODE. It is stdout JSON \u2014",
+    "   hookSpecificOutput.permissionDecision, lb_gate.py:712 \u2014 so exiting 0 cannot suppress a",
+    "   real block.",
+    "",
+    "5. lb_safety IS HERE. It was missing until 2026-08-29, so every installer got the",
+    "   goal-drift gate and no destructive-command guard."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LB_PY=$(command -v \"${LASERBRAIN_PYTHON:-}\" 2>/dev/null || command -v python3 || command -v python); if [ -n \"$LB_PY\" ] && \"$LB_PY\" -c 'import laserbrain' 2>/dev/null; then LASERBRAIN_AGENT=claude \"$LB_PY\" -m laserbrain.hooks.lb_gate; else M=\"${TMPDIR:-/tmp}/laserbrain-inert-$(printf %s \"${LB_PY:-none}\" | tr -c 'a-zA-Z0-9' _)\"; [ -f \"$M\" ] || { : >\"$M\"; printf 'laserbrain hooks are inert: %s cannot import laserbrain. Run: pip install laserbrain into that interpreter, or set LASERBRAIN_PYTHON.\\n' \"${LB_PY:-no python found}\" >&2; }; fi; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "LB_PY=$(command -v \"${LASERBRAIN_PYTHON:-}\" 2>/dev/null || command -v python3 || command -v python); if [ -n \"$LB_PY\" ] && \"$LB_PY\" -c 'import laserbrain' 2>/dev/null; then LASERBRAIN_AGENT=claude \"$LB_PY\" -m laserbrain.hooks.lb_safety; else M=\"${TMPDIR:-/tmp}/laserbrain-inert-$(printf %s \"${LB_PY:-none}\" | tr -c 'a-zA-Z0-9' _)\"; [ -f \"$M\" ] || { : >\"$M\"; printf 'laserbrain hooks are inert: %s cannot import laserbrain. Run: pip install laserbrain into that interpreter, or set LASERBRAIN_PYTHON.\\n' \"${LB_PY:-no python found}\" >&2; }; fi; exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LB_PY=$(command -v \"${LASERBRAIN_PYTHON:-}\" 2>/dev/null || command -v python3 || command -v python); if [ -n \"$LB_PY\" ] && \"$LB_PY\" -c 'import laserbrain' 2>/dev/null; then LASERBRAIN_AGENT=claude \"$LB_PY\" -m laserbrain.hooks.lb_coverage; else M=\"${TMPDIR:-/tmp}/laserbrain-inert-$(printf %s \"${LB_PY:-none}\" | tr -c 'a-zA-Z0-9' _)\"; [ -f \"$M\" ] || { : >\"$M\"; printf 'laserbrain hooks are inert: %s cannot import laserbrain. Run: pip install laserbrain into that interpreter, or set LASERBRAIN_PYTHON.\\n' \"${LB_PY:-no python found}\" >&2; }; fi; exit 0"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LB_PY=$(command -v \"${LASERBRAIN_PYTHON:-}\" 2>/dev/null || command -v python3 || command -v python); if [ -n \"$LB_PY\" ] && \"$LB_PY\" -c 'import laserbrain' 2>/dev/null; then LASERBRAIN_AGENT=claude \"$LB_PY\" -m laserbrain.hooks.lb_coverage; else M=\"${TMPDIR:-/tmp}/laserbrain-inert-$(printf %s \"${LB_PY:-none}\" | tr -c 'a-zA-Z0-9' _)\"; [ -f \"$M\" ] || { : >\"$M\"; printf 'laserbrain hooks are inert: %s cannot import laserbrain. Run: pip install laserbrain into that interpreter, or set LASERBRAIN_PYTHON.\\n' \"${LB_PY:-no python found}\" >&2; }; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
