@@ -2104,12 +2104,22 @@ async function _call(name, args) {
       // computed at all. Denormalised on purpose: a self-describing row needs no join, and
       // a join that does not exist is what killed this twice already.
       const _arm = armNow()
+      // goal_score is computed HERE, above the row, since 2026-08-30. It used to be
+      // computed twenty-two lines below this call, so it reached the response and never the
+      // corpus: 0 of 8,029 rows carried it. Every precision figure and every study drawn
+      // from this log was computed without the one field that separates drift from progress.
+      // Φ conflates them — a run that finishes and a run that wanders both move away from
+      // ground. Rows written before this date do not have it and cannot be backfilled.
+      const _g = new Set(toWords(goal)), _f = new Set(drift.firstGoal ?? [])
+      let _i = 0; for (const x of _g) if (_f.has(x)) _i++
+      const goal_score = _f.size ? Number((_i / (new Set([..._g, ..._f]).size || 1)).toFixed(2)) : 1
       logDrift({ ts: new Date().toISOString(), run: runId, agent: AGENT, step, reason, drifting,
-        phi: Number(phi.toFixed(2)), laserscore: score, goal, progress, distance: asDist(distance),
+        phi: Number(phi.toFixed(2)), goal_score,
+        laserscore: score, goal, progress, distance: asDist(distance),
         dist_recent: drift.distHist.slice(-4),
         arm: _arm.arm, unit: _arm.unit,
         grammar_version: GRAMMAR.laserbrain_grammar ?? null,
-        logged_by: 'lasermind/mcp-server.mjs', ...extra })
+        logged_by: 'laserbrain/javascript/mcp-server.mjs', ...extra })
       const obs = observedProgress()
       // Reported only when it DISAGREES. A field that always appears gets skimmed; one
       // that appears when the trace contradicts the claim is worth reading.
@@ -2124,9 +2134,6 @@ async function _call(name, args) {
       // already gone too far. Φ answers "how far from ground", this answers "still the
       // same errand?", and they are different questions: a faithful goal can sit at high
       // Φ while it is genuinely hard, and a low-Φ reading can belong to a different task.
-      const _g = new Set(toWords(goal)), _f = new Set(drift.firstGoal ?? [])
-      let _i = 0; for (const x of _g) if (_f.has(x)) _i++
-      const goal_score = _f.size ? Number((_i / (new Set([..._g, ..._f]).size || 1)).toFixed(2)) : 1
       // Recorded every step, not just the fires: a context whose history exists only for
       // its bad moments cannot answer "did this ever work".
       const ctx = contextId(goal)
@@ -2225,7 +2232,7 @@ async function _call(name, args) {
             ? (judgment.control.decision !== 'proceed') ===
               ['abandon', 'over-budget', 'wrong-problem'].includes(judgment.verdict)
             : null,
-          logged_by: 'lasermind/mcp-server.mjs' })
+          logged_by: 'laserbrain/javascript/mcp-server.mjs' })
       }
       // BLIND ARM. Everything above already ran — the verdict is computed, the drift is
       // logged, the corpus is identical to a sighted session. Only the agent is not told.
@@ -2333,7 +2340,21 @@ async function _call(name, args) {
       return record(false, 'grounded', 'Ground state set — this is where you started. Continue, and check_state each step.')
     }
     const phi = displacement({ goal, progress, distance }, drift.ground)
-    if ((progress === 'stuck' || progress === 'circling') && phi > SELF_REPORT_MIN)
+    // THE GOAL ANCHOR IS TESTED FIRST, since 2026-08-30. This branch returned before
+    // goal-drift was ever evaluated, and it passes the previous verdict through by design —
+    // the warn-then-interrupt rule. So the loudest state the instrument can be in came back
+    // silent: goal fully abandoned AND the agent reporting `circling`, phi 0.85,
+    // goal_score 0.00, drifting FALSE. An agent that is lost and says so triggered nothing.
+    //
+    // The guard is goal_score, not phi. phi cannot tell these apart: it is high both when
+    // the goal has changed and when the work is merely far from where it started. Below
+    // goal_min the goal itself has moved, which is goal-drift's question, so this declines
+    // and the ladder continues to it.
+    const _sr = new Set(drift.firstGoal ?? []), _sc = new Set(toWords(goal))
+    let _si = 0; for (const w of _sc) if (_sr.has(w)) _si++
+    const _sgs = _sr.size ? _si / (new Set([..._sc, ..._sr]).size || 1) : 1
+    if ((progress === 'stuck' || progress === 'circling') && phi > SELF_REPORT_MIN
+        && _sgs >= (_CAL.goal_min ?? 0.30))
       // TWO-STRIKE, matching Python and drift.ts. This returned `true` on the FIRST
       // occurrence, so this server interrupted where the reference merely warns. Found
       // 2026-08-20 by giving it the parity suite it had never had: it is the server its
